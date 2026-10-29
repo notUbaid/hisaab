@@ -1,0 +1,37 @@
+id: EC-12
+title: "Collector Insufficient Balance on Settlement Run Date"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 12"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 50000 # Only ₹500.00 available
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  policy_flags:
+    insufficient_balance_policy: "all_or_nothing"
+  buyer_claim:
+    message_id: "msg-buyer-ec12-001"
+    orders:
+      - order_id: "ORD-20261030-1201"
+        amount_paise: 150000 # ₹1,500.00 requires ₹1,440.00 payout
+        commission_paise: 4500
+        bff_paise: 1500
+  seller_claim:
+    message_id: "msg-seller-ec12-001"
+    orders:
+      - order_id: "ORD-20261030-1201"
+        amount_paise: 150000
+        commission_paise: 4500
+        bff_paise: 1500
+
+then:
+  match_status: "INSUFFICIENT_BALANCE"
+  error_code: "COLLECTOR_BALANCE_DEFICIT"
+  matched_orders_count: 0
+  unmatched_orders_count: 0
+  net_payout_paise: 0
+  collector_final_balance_paise: 50000 # Intact, no overdraft
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance

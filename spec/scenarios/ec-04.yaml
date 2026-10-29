@@ -1,0 +1,46 @@
+id: EC-04
+title: "Partial order set overlap between Buyer and Seller claims"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 4"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000 # ₹50,000.00
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  policy_flags:
+    allow_partial_batch: true
+  buyer_claim:
+    message_id: "msg-buyer-ec04-001"
+    orders:
+      - order_id: "ORD-20261030-401"
+        amount_paise: 100000
+        commission_paise: 3000
+        bff_paise: 1000
+      - order_id: "ORD-20261030-402"
+        amount_paise: 200000
+        commission_paise: 6000
+        bff_paise: 2000
+  seller_claim:
+    message_id: "msg-seller-ec04-001"
+    orders:
+      - order_id: "ORD-20261030-402"
+        amount_paise: 200000
+        commission_paise: 6000
+        bff_paise: 2000
+      - order_id: "ORD-20261030-403"
+        amount_paise: 300000
+        commission_paise: 9000
+        bff_paise: 3000
+
+then:
+  match_status: "PARTIAL_MATCH"
+  matched_orders_count: 1 # Order 402 matched
+  unmatched_orders_count: 2 # Order 401 (Buyer) and 403 (Seller) unmatched
+  net_payout_paise: 198000 # 200000 - 2000 (Total - BFF)
+  collector_final_balance_paise: 4802000 # 5000000 - 198000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant13_GrossNetTieOut

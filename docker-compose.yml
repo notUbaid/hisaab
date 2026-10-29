@@ -12,7 +12,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
     command: >
       postgres
         -c fsync=on
@@ -22,17 +22,66 @@ services:
         -c max_connections=100
         -c shared_buffers=256MB
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hisaab"]
+      test: ["CMD-SHELL", "pg_isready -U hisaab -d hisaab"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  hisaab-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: hisaab-api
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      HISAAB_DB_URL: "postgres://hisaab:hisaab_dev@postgres:5432/hisaab?sslmode=disable"
+      HISAAB_VERIFY_SIGNATURES: "false"
+      TZ: "Asia/Kolkata"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  hisaab-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: hisaab-worker
+    entrypoint: ["/app/hisaab-worker"]
+    environment:
+      HISAAB_DB_URL: "postgres://hisaab:hisaab_dev@postgres:5432/hisaab?sslmode=disable"
+      HISAAB_STANDALONE: "false"
+      HISAAB_POLL_INTERVAL_MS: "500"
+      HISAAB_BATCH_SIZE: "20"
+      TZ: "Asia/Kolkata"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  hisaab-console:
+    build:
+      context: .
+      dockerfile: Dockerfile.console
+    container_name: hisaab-console
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: "production"
+      PORT: "3000"
+      NEXT_PUBLIC_API_URL: "http://hisaab-api:8080"
+    depends_on:
+      - hisaab-api
+    restart: unless-stopped
 
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.9.0
     container_name: hisaab-toxiproxy
     ports:
       - "8474:8474"   # Admin API
-      - "5433:5433"   # Proxied Postgres for fault injection tests
+      - "5433:5433"   # Proxied Postgres for network fault injection
     depends_on:
       postgres:
         condition: service_healthy

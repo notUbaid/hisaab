@@ -60,6 +60,7 @@ def main():
         ("NP Toolkit & Logistics Separator (M3)", "internal/nptoolkit"),
         ("Three-Way Recon Engine (M4)", "internal/recon"),
         ("Verification Harness & Failpoints (M5)", "internal/verification"),
+        ("Declarative Scenario DSL Runner (M0.2)", "internal/scenariodsl"),
         ("SA Simulator API Service Health Probes", "cmd/api"),
         ("Transactional Outbox Worker", "cmd/worker"),
         ("Crash-Point Enumeration (8 Failpoints)", "tests/crash"),
@@ -99,6 +100,7 @@ def main():
     print_header("Phase 3: Production Binaries & Benchmarks")
     run_step("Build hisaab-api.exe", f"go build -o {os.path.join(BIN_DIR, 'hisaab-api.exe')} ./cmd/api")
     run_step("Build hisaab-worker.exe", f"go build -o {os.path.join(BIN_DIR, 'hisaab-worker.exe')} ./cmd/worker")
+    run_step("Build hisaab-cli.exe", f"go build -o {os.path.join(BIN_DIR, 'hisaab-cli.exe')} ./cmd/cli")
 
     bench_bin = os.path.join(BIN_DIR, "bench.test.exe")
     if run_step("Compile Benchmarks", f"go test -c -o {bench_bin} ./tests/bench"):

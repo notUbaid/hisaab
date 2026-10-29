@@ -1,0 +1,31 @@
+# Multi-stage Dockerfile for Hisaab Go Services
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /app
+
+RUN apk add --no-cache git
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/hisaab-api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/hisaab-worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/hisaab-cli ./cmd/cli
+
+# Final minimal runner
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata
+
+ENV TZ=Asia/Kolkata
+WORKDIR /app
+
+COPY --from=builder /bin/hisaab-api /app/hisaab-api
+COPY --from=builder /bin/hisaab-worker /app/hisaab-worker
+COPY --from=builder /bin/hisaab-cli /app/hisaab-cli
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/hisaab-api"]

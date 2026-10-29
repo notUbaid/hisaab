@@ -1,0 +1,30 @@
+id: EC-01
+title: "Buyer App submits /settle; Seller App does not submit"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 1"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 2000000 # ₹20,000.00
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  policy_flags:
+    carry_forward_days: 1
+  buyer_claim:
+    message_id: "msg-buyer-ec01-001"
+    orders:
+      - order_id: "ORD-20261030-101"
+        amount_paise: 150000
+        commission_paise: 4500
+        bff_paise: 1500
+
+then:
+  match_status: "UNMATCHED_CARRY_FORWARD"
+  error_code: "COUNTERPART_MISSING"
+  matched_orders_count: 0
+  unmatched_orders_count: 0
+  net_payout_paise: 0
+  collector_final_balance_paise: 2000000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance

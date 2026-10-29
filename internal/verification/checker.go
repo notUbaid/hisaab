@@ -67,6 +67,15 @@ func (c *InvariantChecker) CheckInvariant13_GrossNetTieOut(batch *settlement.Bat
 		return errors.New("verification: batch cannot be nil")
 	}
 
+	// If balance check failed, no net bank instructions should be generated
+	if !batch.BalancePassed && batch.ErrorCode == "INSUFFICIENT_BALANCE" {
+		if len(batch.Instructions) > 0 {
+			return fmt.Errorf("%w: failed balance check but %d bank instructions generated",
+				ErrInvariant13TieOutBroken, len(batch.Instructions))
+		}
+		return nil
+	}
+
 	if len(batch.MatchedOrders) == 0 {
 		if len(batch.Instructions) > 0 {
 			return fmt.Errorf("%w: zero matched orders but %d bank instructions generated",

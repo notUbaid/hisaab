@@ -1,0 +1,44 @@
+id: EC-03
+title: "Both Buyer App and Seller App submit identical order sets"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 3"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000 # ₹50,000.00
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  buyer_claim:
+    message_id: "msg-buyer-ec03-001"
+    orders:
+      - order_id: "ORD-20261030-301"
+        amount_paise: 150000
+        commission_paise: 4500
+        bff_paise: 1500
+      - order_id: "ORD-20261030-302"
+        amount_paise: 250000
+        commission_paise: 7500
+        bff_paise: 2500
+  seller_claim:
+    message_id: "msg-seller-ec03-001"
+    orders:
+      - order_id: "ORD-20261030-301"
+        amount_paise: 150000
+        commission_paise: 4500
+        bff_paise: 1500
+      - order_id: "ORD-20261030-302"
+        amount_paise: 250000
+        commission_paise: 7500
+        bff_paise: 2500
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 2
+  unmatched_orders_count: 0
+  net_payout_paise: 396000 # (150000 - 1500) + (250000 - 2500) = 148500 + 247500 (Collector transfers Total - BFF)
+  collector_final_balance_paise: 4604000 # 5000000 - 396000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant13_GrossNetTieOut
