@@ -30,40 +30,40 @@ jobs:
         run: |
           pip install pyyaml
 
-      - name: Phase 1.1: Spec Coverage Verification (23/23 ECs)
+      - name: "Phase 1.1: Spec Coverage Verification (23/23 ECs)"
         run: python scripts/check_spec_coverage.py
 
-      - name: Phase 1.2: Zero Real Financial PII Scanner
+      - name: "Phase 1.2: Zero Real Financial PII Scanner"
         run: python scripts/check_real_data.py
 
-      - name: Phase 1.3: PostgreSQL DDL & Immutability Trigger Check
+      - name: "Phase 1.3: PostgreSQL DDL & Immutability Trigger Check"
         run: python scripts/verify_sql_schema.py
 
-      - name: Phase 2.1: Double-Entry Core Ledger & Invariants (M1)
+      - name: "Phase 2.1: Double-Entry Core Ledger & Invariants (M1)"
         run: go test -v ./internal/ledger/...
 
-      - name: Phase 2.2: Indian Banking Calendar & RBI Rules
+      - name: "Phase 2.2: Indian Banking Calendar & RBI Rules"
         run: go test -v ./internal/calendar/...
 
-      - name: Phase 2.3: SA Simulator Matching & Refunds (M2)
+      - name: "Phase 2.3: SA Simulator Matching & Refunds (M2)"
         run: go test -v ./internal/settlement/...
 
-      - name: Phase 2.4: NP Toolkit, Logistics & Tax Withholding (M3)
+      - name: "Phase 2.4: NP Toolkit, Logistics & Tax Withholding (M3)"
         run: go test -v ./internal/nptoolkit/...
 
-      - name: Phase 2.5: Three-Way Recon Engine (M4)
+      - name: "Phase 2.5: Three-Way Recon Engine (M4)"
         run: go test -v ./internal/recon/...
 
-      - name: Phase 2.6: Verification Harness & Failpoints (M5)
+      - name: "Phase 2.6: Verification Harness & Failpoints (M5)"
         run: go test -v ./internal/verification/...
 
-      - name: Phase 2.7: Formal Mutation Testing Harness (M5.8 - 100% Score)
+      - name: "Phase 2.7: Formal Mutation Testing Harness (M5.8 - 100% Score)"
         run: go test -v ./tests/mutation/...
 
-      - name: Phase 2.8: Declarative Scenario DSL Runner (M0.2)
+      - name: "Phase 2.8: Declarative Scenario DSL Runner (M0.2)"
         run: go test -v ./internal/scenariodsl/...
 
-      - name: Phase 2.9: 8 Crash Failpoints & Property Fuzzing
+      - name: "Phase 2.9: 8 Crash Failpoints & Property Fuzzing"
         run: |
           go test -v ./tests/crash/...
           go test -v ./tests/property/...
