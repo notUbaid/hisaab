@@ -79,9 +79,30 @@ type PostRequest struct {
 
 // PostResult summarizes the persisted transaction details.
 type PostResult struct {
-	TransactionID  int64     `json:"transaction_id"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	LinesCount     int       `json:"lines_count"`
+	TransactionID  int64       `json:"transaction_id"`
+	IdempotencyKey string      `json:"idempotency_key"`
+	LinesCount     int         `json:"lines_count"`
 	TotalPaise     AmountPaise `json:"total_paise"`
-	CreatedAt      time.Time `json:"created_at"`
+	CreatedAt      time.Time   `json:"created_at"`
+}
+
+// JournalTransaction represents a persisted atomic financial posting event.
+type JournalTransaction struct {
+	ID             int64       `json:"id"`
+	IdempotencyKey string      `json:"idempotency_key"`
+	Description    string      `json:"description"`
+	CauseType      CauseType   `json:"cause_type"`
+	CauseID        int64       `json:"cause_id"`
+	CreatedAt      time.Time   `json:"created_at"`
+}
+
+// JournalEntry represents an individual posted debit or credit leg.
+type JournalEntry struct {
+	ID            int64       `json:"id"`
+	TransactionID int64       `json:"transaction_id"`
+	AccountID     int64       `json:"account_id"`
+	AccountName   string      `json:"account_name"`
+	Direction     Direction   `json:"direction"`
+	AmountPaise   AmountPaise `json:"amount_paise"`
+	CreatedAt     time.Time   `json:"created_at"`
 }

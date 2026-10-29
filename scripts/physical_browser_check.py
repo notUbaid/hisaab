@@ -1,6 +1,10 @@
 import os
 import sys
 import time
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from playwright.sync_api import sync_playwright
 
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -53,28 +57,54 @@ def run_browser_verification():
         print(f"  'Independent Claim Submissions' step found: {steps > 0}")
         assert steps > 0, "Missing settlement workflow steps"
 
+        # Verify batch switching
+        batch_buttons = page.locator("button:has-text('BATCH-')").count()
+        print(f"  Batch switcher tabs found: {batch_buttons}")
+        assert batch_buttons >= 3, f"Expected at least 3 batch tabs, found {batch_buttons}"
+
         timeline_screenshot = os.path.join(ARTIFACTS_DIR, "02_timeline.png")
         page.screenshot(path=timeline_screenshot, full_page=True)
         print(f"  Screenshot saved: {timeline_screenshot}")
         results["timeline"] = "PASS"
 
-        # 3. Test Exceptions Queue (/exceptions)
+        # 3. Test Exceptions Queue (/exceptions) & Interactive Maker-Checker
         print(f"\n[3/4] Navigating to Exceptions Queue: {BASE_URL}/exceptions")
         page.goto(f"{BASE_URL}/exceptions", wait_until="networkidle")
         exceptions_header = page.locator("h1").inner_text()
         print(f"  Page Header: {exceptions_header}")
         assert "Exception" in exceptions_header, f"Unexpected header: {exceptions_header}"
 
-        # Verify exception table or classes
-        amount_mismatch_badge = page.locator("text=AMOUNT_MISMATCH").first.is_visible()
-        print(f"  AMOUNT_MISMATCH badge visible: {amount_mismatch_badge}")
+        # Test Inspect & Maker-Checker Workflow
+        print("  Testing Maker-Checker Workflow...")
+        page.locator("button:has-text('Inspect →')").first.click()
+        page.wait_for_selector("text=Resolution & Maker-Checker Workflow")
+        print("  [OK] Resolution drawer opened")
+
+        # Maker submits proposal
+        page.locator("button:has-text('Submit Proposal for Review')").click()
+        page.wait_for_selector("text=Awaiting dual-control Checker approval")
+        print("  [OK] Maker proposal submitted")
+
+        # Test self-approval prevention (dual control check)
+        # Input maker's ID into checker's field
+        checker_input = page.locator("#checker-user-id")
+        checker_input.fill("maker.finance@np.org")
+        page.locator("button:has-text('Authorize & Post to Ledger')").click()
+        page.wait_for_selector("text=DUAL CONTROL VIOLATION")
+        print("  [OK] Dual Control enforced: self-approval strictly rejected!")
+
+        # Fix to valid distinct checker
+        checker_input.fill("checker.auditor@nodalbank.in")
+        page.locator("button:has-text('Authorize & Post to Ledger')").click()
+        page.wait_for_selector("text=Resolved & Reconciled")
+        print("  [OK] Valid dual-control approval succeeded; break resolved!")
 
         exceptions_screenshot = os.path.join(ARTIFACTS_DIR, "03_exceptions.png")
         page.screenshot(path=exceptions_screenshot, full_page=True)
         print(f"  Screenshot saved: {exceptions_screenshot}")
         results["exceptions"] = "PASS"
 
-        # 4. Test Scenario Playground (/playground)
+        # 4. Test Scenario Playground (/playground) & Live API Toggle
         print(f"\n[4/4] Navigating to Scenario Playground: {BASE_URL}/playground")
         page.goto(f"{BASE_URL}/playground", wait_until="networkidle")
         playground_header = page.locator("h1").inner_text()
@@ -82,21 +112,31 @@ def run_browser_verification():
         assert "Playground" in playground_header, f"Unexpected header: {playground_header}"
 
         # Verify 23 scenarios in selector
-        scenario_buttons = page.locator("button:has-text('EC-')").count()
+        scenario_buttons = page.locator("div.space-y-1\\.5 button:has-text('EC-')").count()
         print(f"  Scenario items in selector: {scenario_buttons}")
         assert scenario_buttons >= 23, f"Expected 23 scenarios, found {scenario_buttons}"
 
-        # Test interaction with EC-03
-        print("  Testing interaction: Executing EC-03...")
+        # Test interaction with EC-03 in Simulator mode
+        print("  Testing interaction: Executing EC-03 in Simulator mode...")
         page.locator("div.space-y-1\\.5 button:has-text('EC-03')").click()
         page.wait_for_timeout(300)
         page.locator("button:has-text('Execute Scenario')").click()
         
-        # Wait for simulation output
         page.wait_for_selector("text=[SIMULATOR EXECUTION TRACE]", timeout=5000)
         trace_text = page.locator("div:has-text('[SIMULATOR EXECUTION TRACE]')").last.inner_text()
-        print(f"  Trace generated successfully. Length: {len(trace_text)} chars")
         assert "SIMULATION_COMPLETED (100% Invariant Compliant)" in trace_text, "Trace missing compliance confirmation"
+        print("  [OK] EC-03 Simulator trace verified")
+
+        # Test interaction with Live API Route toggle
+        print("  Testing Live API toggle & /api/scenarios/run endpoint...")
+        page.locator("button:has-text('Live Go API')").click()
+        page.wait_for_timeout(200)
+        page.locator("button:has-text('Execute Scenario')").click()
+        
+        page.wait_for_selector("text=[LIVE GO BACKEND EXECUTION TRACE]", timeout=5000)
+        live_trace = page.locator("div:has-text('[LIVE GO BACKEND EXECUTION TRACE]')").last.inner_text()
+        assert "LIVE_EXECUTION_VERIFIED" in live_trace, "Live API trace missing verification confirmation"
+        print("  [OK] Live API Route verified via HTTP route handler")
 
         playground_ec03_screenshot = os.path.join(ARTIFACTS_DIR, "04_playground_ec03.png")
         page.screenshot(path=playground_ec03_screenshot, full_page=True)
@@ -107,10 +147,10 @@ def run_browser_verification():
         page.locator("div.space-y-1\\.5 button:has-text('EC-08')").click()
         page.wait_for_timeout(300)
         page.locator("button:has-text('Execute Scenario')").click()
-        page.wait_for_selector("text=[SIMULATOR EXECUTION TRACE]", timeout=5000)
-        trace_ec08 = page.locator("div:has-text('[SIMULATOR EXECUTION TRACE]')").last.inner_text()
+        page.wait_for_selector("text=[LIVE GO BACKEND EXECUTION TRACE]", timeout=5000)
+        trace_ec08 = page.locator("div:has-text('[LIVE GO BACKEND EXECUTION TRACE]')").last.inner_text()
         assert "AMOUNT_MISMATCH" in trace_ec08, "EC-08 trace missing AMOUNT_MISMATCH"
-        print(f"  EC-08 Trace confirmed AMOUNT_MISMATCH error handling")
+        print(f"  [OK] EC-08 Live Trace confirmed AMOUNT_MISMATCH error handling")
 
         playground_ec08_screenshot = os.path.join(ARTIFACTS_DIR, "05_playground_ec08.png")
         page.screenshot(path=playground_ec08_screenshot, full_page=True)

@@ -81,8 +81,12 @@ export default function DashboardPage() {
               </thead>
               <tbody className="divide-y divide-zinc-800/60 font-mono text-xs">
                 {recentBatches.map((b) => (
-                  <tr key={b.id} className="hover:bg-zinc-800/30 transition">
-                    <td className="py-3 px-3 font-medium text-zinc-200">{b.id}</td>
+                  <tr key={b.id} className="hover:bg-zinc-800/40 transition group">
+                    <td className="py-3 px-3 font-medium text-zinc-200">
+                      <Link href="/timeline" className="text-emerald-400 hover:underline flex items-center gap-1">
+                        {b.id}
+                      </Link>
+                    </td>
                     <td className="py-3 px-3 text-zinc-400">{b.npPair}</td>
                     <td className="py-3 px-3 text-right text-zinc-300">{b.orders}</td>
                     <td className="py-3 px-3 text-right text-zinc-200">{formatPaiseToINR(b.volume)}</td>

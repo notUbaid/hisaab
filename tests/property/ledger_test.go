@@ -26,12 +26,24 @@ func TestProperty_Invariant1_ZeroSum(t *testing.T) {
 		}
 
 		// Split the credit amount across random lines that sum to totalDebit
+		// Each leg must be strictly positive (> 0 paise)
 		remainingCredit := totalDebit
 		for i := 0; i < linesCount-1; i++ {
-			if remainingCredit <= 1 {
-				break
+			remainingLegs := int64(linesCount - i)
+			if int64(remainingCredit) <= remainingLegs {
+				lines = append(lines, ledger.EntryLine{
+					AccountName: "receiver:ondc_settlement",
+					Direction:   ledger.Credit,
+					AmountPaise: 1,
+				})
+				remainingCredit -= 1
+				continue
 			}
-			part := ledger.AmountPaise(rapid.Int64Range(1, int64(remainingCredit/2)+1).Draw(t, "credit_part"))
+			maxPart := int64(remainingCredit) - remainingLegs + 1
+			if maxPart > int64(remainingCredit)/2+1 {
+				maxPart = int64(remainingCredit)/2 + 1
+			}
+			part := ledger.AmountPaise(rapid.Int64Range(1, maxPart).Draw(t, "credit_part"))
 			remainingCredit -= part
 			lines = append(lines, ledger.EntryLine{
 				AccountName: "receiver:ondc_settlement",
@@ -39,7 +51,7 @@ func TestProperty_Invariant1_ZeroSum(t *testing.T) {
 				AmountPaise: part,
 			})
 		}
-		// Final balancing credit line
+		// Final balancing credit line (guaranteed >= 1 paise)
 		lines = append(lines, ledger.EntryLine{
 			AccountName: "receiver:operative",
 			Direction:   ledger.Credit,
