@@ -50,6 +50,8 @@ def main():
         sys.exit(1)
     if not run_step("Zero Real Financial PII Check", "python scripts/check_real_data.py"):
         sys.exit(1)
+    if not run_step("PostgreSQL DDL & Immutability Trigger Check", "python scripts/verify_sql_schema.py"):
+        sys.exit(1)
 
     # 2. Go Core Engines & Invariant Verification
     print_header("Phase 2: Core Ledger & Invariant Verification")

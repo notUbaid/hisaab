@@ -1,0 +1,36 @@
+id: EC-22
+title: "Statutory Tax Withholding (Section 194-O TDS & Section 52 TCS) Settlement"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.4, Case 22"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 10000000 # ₹100,000.00
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  buyer_claim:
+    message_id: "msg-buyer-ec22-001"
+    orders:
+      - order_id: "ORD-20261030-TAX1"
+        amount_paise: 1000000 # ₹10,000.00
+        commission_paise: 30000
+        bff_paise: 10000
+  seller_claim:
+    message_id: "msg-seller-ec22-001"
+    orders:
+      - order_id: "ORD-20261030-TAX1"
+        amount_paise: 1000000
+        commission_paise: 30000
+        bff_paise: 10000
+
+then:
+  match_status: "MATCHED_SETTLED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 990000 # 1000000 - 10000 BFF = ₹9,900.00
+  collector_final_balance_paise: 9010000 # 10000000 - 990000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_TotalMoneyConservation
+    - Invariant13_GrossNetTieOut

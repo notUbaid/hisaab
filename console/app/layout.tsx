@@ -50,6 +50,13 @@ export default function RootLayout({
               >
                 Scenario Playground
               </Link>
+              <Link
+                href="/scenarios"
+                className="px-3 py-1.5 rounded-md hover:bg-zinc-800 text-zinc-300 hover:text-white transition flex items-center gap-1.5"
+              >
+                Scenario Studio
+                <span className="text-[10px] bg-emerald-950 border border-emerald-800 text-emerald-400 px-1.5 py-0.2 rounded font-mono">DSL</span>
+              </Link>
             </nav>
           </div>
 

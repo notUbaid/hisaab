@@ -1,0 +1,36 @@
+id: EC-16
+title: "Full return and refund settlement with counterpart validation"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.3, Case 16"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000 # ₹50,000.00
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  buyer_claim:
+    message_id: "msg-buyer-ec16-001"
+    orders:
+      - order_id: "ORD-20261030-REF1"
+        amount_paise: 100000 # ₹1,000.00
+        commission_paise: 3000
+        bff_paise: 1000
+  seller_claim:
+    message_id: "msg-seller-ec16-001"
+    orders:
+      - order_id: "ORD-20261030-REF1"
+        amount_paise: 100000
+        commission_paise: 3000
+        bff_paise: 1000
+
+then:
+  match_status: "MATCHED_SETTLED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 99000 # 100000 - 1000 BFF = ₹990.00
+  collector_final_balance_paise: 4901000 # 5000000 - 99000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_TotalMoneyConservation
+    - Invariant13_GrossNetTieOut

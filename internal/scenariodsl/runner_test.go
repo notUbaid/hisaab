@@ -133,6 +133,102 @@ func TestRunner_EC12_InsufficientBalance(t *testing.T) {
 	}
 }
 
+func TestRunner_EC02_SellerOnly(t *testing.T) {
+	path := findScenarioPath(t, "ec-02.yaml")
+	sc, err := scenariodsl.LoadScenarioFile(path)
+	if err != nil {
+		t.Fatalf("failed to load ec-02.yaml: %v", err)
+	}
+
+	runner := scenariodsl.NewRunner()
+	res, err := runner.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("scenario EC-02 failed: %v", err)
+	}
+
+	if !res.Passed {
+		t.Fatalf("expected scenario to pass, got failed")
+	}
+	if res.NetPayoutPaise != 0 {
+		t.Fatalf("expected 0 net payout on missing counterpart, got %d", res.NetPayoutPaise)
+	}
+	if res.FinalBalance != 2000000 {
+		t.Fatalf("expected final balance 2000000 paise, got %d", res.FinalBalance)
+	}
+}
+
+func TestRunner_EC06_LogisticsNetting(t *testing.T) {
+	path := findScenarioPath(t, "ec-06.yaml")
+	sc, err := scenariodsl.LoadScenarioFile(path)
+	if err != nil {
+		t.Fatalf("failed to load ec-06.yaml: %v", err)
+	}
+
+	runner := scenariodsl.NewRunner()
+	res, err := runner.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("scenario EC-06 failed: %v", err)
+	}
+
+	if !res.Passed {
+		t.Fatalf("expected scenario to pass, got failed")
+	}
+	if res.NetPayoutPaise != 297000 {
+		t.Fatalf("expected 297000 net payout, got %d", res.NetPayoutPaise)
+	}
+	if res.FinalBalance != 4703000 {
+		t.Fatalf("expected final balance 4703000 paise, got %d", res.FinalBalance)
+	}
+}
+
+func TestRunner_EC16_RefundSettle(t *testing.T) {
+	path := findScenarioPath(t, "ec-16.yaml")
+	sc, err := scenariodsl.LoadScenarioFile(path)
+	if err != nil {
+		t.Fatalf("failed to load ec-16.yaml: %v", err)
+	}
+
+	runner := scenariodsl.NewRunner()
+	res, err := runner.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("scenario EC-16 failed: %v", err)
+	}
+
+	if !res.Passed {
+		t.Fatalf("expected scenario to pass, got failed")
+	}
+	if res.NetPayoutPaise != 99000 {
+		t.Fatalf("expected 99000 net payout, got %d", res.NetPayoutPaise)
+	}
+	if res.FinalBalance != 4901000 {
+		t.Fatalf("expected final balance 4901000 paise, got %d", res.FinalBalance)
+	}
+}
+
+func TestRunner_EC22_TaxWithholding(t *testing.T) {
+	path := findScenarioPath(t, "ec-22.yaml")
+	sc, err := scenariodsl.LoadScenarioFile(path)
+	if err != nil {
+		t.Fatalf("failed to load ec-22.yaml: %v", err)
+	}
+
+	runner := scenariodsl.NewRunner()
+	res, err := runner.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("scenario EC-22 failed: %v", err)
+	}
+
+	if !res.Passed {
+		t.Fatalf("expected scenario to pass, got failed")
+	}
+	if res.NetPayoutPaise != 990000 {
+		t.Fatalf("expected 990000 net payout, got %d", res.NetPayoutPaise)
+	}
+	if res.FinalBalance != 9010000 {
+		t.Fatalf("expected final balance 9010000 paise, got %d", res.FinalBalance)
+	}
+}
+
 func TestRunner_LoadInvalidYAML(t *testing.T) {
 	invalidYAML := []byte("invalid: [yaml: unclosed")
 	_, err := scenariodsl.LoadScenarioYAML(invalidYAML)
