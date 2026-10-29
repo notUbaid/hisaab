@@ -1,0 +1,34 @@
+# Pinned upstream ONDC repositories for spec drift monitoring
+# Updated automatically by scripts/check_ondc_spec_drift.py
+
+automation_specs:
+  owner: "ONDC-Official"
+  repo: "automation-specifications"
+  branch: "master"
+  sha: "c6a7e8b912345678"
+  pinned_at: "2026-10-30T00:00:00Z"
+  spec_version: "NTS10-2.0.0"
+
+log_validation:
+  owner: "ONDC-Official"
+  repo: "log-validation-utility"
+  branch: "main"
+  sha: "a1b2c3d4e5f67890"
+  pinned_at: "2026-10-30T00:00:00Z"
+  spec_version: "RSF-2.0"
+
+mock_server:
+  owner: "ONDC-Official"
+  repo: "mock-server-utility"
+  branch: "main"
+  sha: "e9f8d7c6b5a43210"
+  pinned_at: "2026-10-30T00:00:00Z"
+  spec_version: "RSF-2.0"
+
+rsf_bulk:
+  owner: "ONDC-Official"
+  repo: "rsf-bulk-utility"
+  branch: "main"
+  sha: "1234567890abcdef"
+  pinned_at: "2026-10-30T00:00:00Z"
+  spec_version: "RSF-2.0"

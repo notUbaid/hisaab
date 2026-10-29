@@ -1,0 +1,130 @@
+# Hisaab: ONDC RSF 2.0 Spec Ambiguity Register
+# Each ambiguity is explicitly tracked, given a policy flag, and surfaced rather than silently guessed.
+
+spec_version: "RSF-2.0-BRD-2024-08-02"
+
+ambiguities:
+  - id: AMB-001
+    edge_case_id: "EC-08"
+    title: "Match Semantics: Order ID only vs Order ID + Component Amounts"
+    brd_reference: "BRD §4.2 & Annexure Balance Check Example"
+    description: >
+      In the BRD balance-check walkthrough, orders 3 and 4 are listed as matched despite differing
+      BFF (Buyer Finder Fee) amounts between Buyer App and Seller App claims. Does the SA match on
+      Network Order ID alone and reconcile differences later, or require an exact match on all components?
+    policy_flag: "match_amount_tolerance_paise"
+    default_policy: "strict_all_components"
+    options:
+      - name: "strict_all_components"
+        behavior: "Order marked amount_mismatch unless order amount, commission, and BFF match exactly (0 paise tolerance)."
+      - name: "order_id_only"
+        behavior: "Order matched on ID alone; component discrepancies routed to recon exception queue."
+
+  - id: AMB-002
+    edge_case_id: "EC-12"
+    title: "Insufficient Balance: All-or-Nothing vs Partial Fill"
+    brd_reference: "BRD §4.2 Case 12"
+    description: >
+      When the Collector's settlement account lacks sufficient funds to cover the total matched claims,
+      the BRD states that all orders in the batch are rejected. However, real-world clearing houses often
+      support partial settlement (e.g. FIFO or priority-based) to maximize liquidity velocity.
+    policy_flag: "partial_fill_allowed"
+    default_policy: "all_or_nothing"
+    options:
+      - name: "all_or_nothing"
+        behavior: "Reject all matched orders in batch; no funds move; Collector notified to top up."
+      - name: "fifo_partial_fill"
+        behavior: "Settle orders in ascending timestamp/order sequence until available balance is exhausted; reject remainder."
+
+  - id: AMB-003
+    edge_case_id: "EC-10"
+    title: "Carry-Forward Expiration and Retention Horizon"
+    brd_reference: "BRD §4.2 Cases 9, 10, 11"
+    description: >
+      When one party submits an order but the counterpart has not arrived, the BRD mentions carry-forward
+      to the next day, but specifies no upper bound on how long unmatched claims remain active before expiration.
+    policy_flag: "carry_forward_days"
+    default_policy: "2_business_days"
+    options:
+      - name: "1_business_day"
+        behavior: "Hold for T+1 only; expire at T+1 cut-off."
+      - name: "2_business_days"
+        behavior: "Hold for T+2 business days (recommended ONDC standard window)."
+      - name: "7_calendar_days"
+        behavior: "Extended window for dispute-prone retail transactions."
+
+  - id: AMB-004
+    edge_case_id: "EC-20"
+    title: "Cut-off Window Time Zone and Monotonicity"
+    brd_reference: "BRD §3.1 Settlement Cycle"
+    description: >
+      The BRD specifies 'same date' settlements without defining the exact cut-off time (e.g. 18:00 vs 23:59:59 IST)
+      or how timestamp skew between client and SA clocks should be resolved.
+    policy_flag: "cut_off_time_ist"
+    default_policy: "23_59_59_server_ist"
+    options:
+      - name: "23_59_59_server_ist"
+        behavior: "Server-side receive timestamp converted to Asia/Kolkata determines the calendar date; client timestamps are ignored for batch assignment."
+      - name: "18_00_00_banking_ist"
+        behavior: "Align with standard RBI RTGS banking hours cut-off at 18:00 IST."
+
+  - id: AMB-005
+    edge_case_id: "EC-22"
+    title: "GST TCS / TDS Withholding Allocation"
+    brd_reference: "BRD Annexure Section 5"
+    description: >
+      The BRD claim schemas do not include dedicated tax withholding fields (GST TCS 1%, Section 194-O TDS 1%).
+      Whether deductions are calculated by the SA per-order, per-batch, or withheld by the Buyer App beforehand
+      is unstated in the v2.0 text.
+    policy_flag: "tax_reconciliation_mode"
+    default_policy: "explicit_deduction_legs"
+    options:
+      - name: "explicit_deduction_legs"
+        behavior: "SA calculates statutory GST TCS / TDS as separate ledger legs and posts to tax authority liability accounts."
+      - name: "np_pre_withheld"
+        behavior: "Assume submitted claim amounts are already net of withholding taxes."
+
+  - id: AMB-006
+    edge_case_id: "EC-04"
+    title: "Handling Arithmetic Typo in BRD Worked Example"
+    brd_reference: "BRD Annexure Page 14"
+    description: >
+      The BRD example states total matched claims of ₹200, whereas the table rows for orders 2, 3, and 4
+      sum to ₹300 (100 + 100 + 100). Additionally, the text notes 'processed for orders 2 and 3 and rejected for order 3'.
+    policy_flag: "brd_example_arithmetic_oracle"
+    default_policy: "strict_arithmetic_correction"
+    options:
+      - name: "strict_arithmetic_correction"
+        behavior: "Use true arithmetic sums (₹300) in verification tests and note BRD typo in documentation."
+      - name: "literal_brd_reproduction"
+        behavior: "Simulate exact BRD text values for compliance comparison tests."
+
+  - id: AMB-007
+    edge_case_id: "EC-21"
+    title: "Invalid SoR Account Routing and Suspense Treatment"
+    brd_reference: "BRD §4.2 Case 21"
+    description: >
+      When the Seller on Record (SoR) payout destination fails bank format validation, does the SA fail the entire
+      order settlement, or settle the Seller App commission and route only the SoR principal to suspense?
+    policy_flag: "sor_failure_mode"
+    default_policy: "split_suspense_routing"
+    options:
+      - name: "split_suspense_routing"
+        behavior: "Credit valid legs (Seller commission, Buyer fee); route only the SoR leg to SA suspense account."
+      - name: "fail_whole_order"
+        behavior: "Reject the entire order; hold all associated leg funds in settlement account."
+
+  - id: AMB-008
+    edge_case_id: "EC-14"
+    title: "Bank Failure Recovery: Reversal vs Manual Clearing"
+    brd_reference: "BRD §4.2 Case 14"
+    description: >
+      When a net bank instruction is definitively rejected after debiting settlement accounts, how should the ledger
+      restore balance?
+    policy_flag: "bank_failure_recovery"
+    default_policy: "auto_reversing_journal"
+    options:
+      - name: "auto_reversing_journal"
+        behavior: "Generate an automated reversing entry linking to the failed instruction ID and restore settlement balances."
+      - name: "suspense_park"
+        behavior: "Transfer funds to an unresolved bank suspense account requiring manual operator intervention."

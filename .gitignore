@@ -1,0 +1,81 @@
+# .gitignore — Hisaab
+
+# ─── Go ────────────────────────────────────────────────────────────
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+coverage.out
+coverage.html
+
+# Go workspaces
+go.work.sum
+
+# ─── Secrets (NEVER commit these) ──────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*_rsa
+*_ed25519
+*.secret
+secrets.yaml
+secrets.yml
+.secrets/
+
+# Explicitly block any file that could contain DB credentials
+database.yml
+database.yaml
+config/secrets*
+
+# ─── IDE ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Node / Console ────────────────────────────────────────────────
+console/node_modules/
+console/.next/
+console/.env.local
+console/out/
+
+# ─── Python scripts ────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ─── Docker ────────────────────────────────────────────────────────
+# Keep docker-compose files; ignore local overrides
+docker-compose.override.yml
+
+# ─── Database ──────────────────────────────────────────────────────
+*.dump
+*.sql.gz
+pgdata/
+
+# ─── Test artifacts ────────────────────────────────────────────────
+testdata/real/         # only synthetic data in testdata/
+*.seed                 # property test seeds (committed when reproducing bugs)
+
+# ─── Observability ─────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── ONDC spec pins (committed; not ignored) ───────────────────────
+# spec/ondc-pins.yaml is committed to track upstream drift
+
+# ─── CI artifacts ──────────────────────────────────────────────────
+.github/workflows/*.local.yml

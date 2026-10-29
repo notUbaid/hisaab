@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hisaab-postgres
+    environment:
+      POSTGRES_DB: hisaab
+      POSTGRES_USER: hisaab
+      POSTGRES_PASSWORD: hisaab_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    command: >
+      postgres
+        -c fsync=on
+        -c synchronous_commit=on
+        -c log_min_duration_statement=500
+        -c log_checkpoints=on
+        -c max_connections=100
+        -c shared_buffers=256MB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hisaab"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: hisaab-toxiproxy
+    ports:
+      - "8474:8474"   # Admin API
+      - "5433:5433"   # Proxied Postgres for fault injection tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

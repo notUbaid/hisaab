@@ -1,0 +1,163 @@
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    # Correctness
+    - errcheck          # no discarded errors
+    - staticcheck       # SA*, S1*, QF* checks
+    - gosimple
+    - govet
+    - ineffassign
+    - unused
+    - typecheck
+
+    # Security
+    - gosec             # G101–G604 security rules
+    - bodyclose         # unclosed HTTP response bodies
+    - noctx             # HTTP requests without context
+    - rowserrcheck      # sql.Rows.Err() not checked
+
+    # Money safety
+    - forbidigo         # custom banned function patterns (see below)
+
+    # Code quality
+    - gocyclo           # cyclomatic complexity ≤ 15
+    - gocognit          # cognitive complexity ≤ 20
+    - godot             # comment punctuation
+    - misspell          # spelling
+    - whitespace        # trailing whitespace
+    - gofmt             # formatting
+    - goimports         # import ordering
+    - revive            # opinionated linter (superset of golint)
+    - wrapcheck         # errors must be wrapped (financial code)
+    - exhaustive        # switch exhaustiveness on enums
+    - contextcheck      # context passed through call chains
+    - nilerr            # return (nil, nil) is often a bug
+    - nilnil            # return (nil, nil) on error interface
+    - dupword           # duplicate words in comments
+    - decorder          # declaration order (types, consts, vars, funcs)
+    - loggercheck       # structured log key-value pairs balanced
+
+  disable:
+    - funlen            # we use wrapcheck instead; some posting functions are long by design
+
+linters-settings:
+  gosec:
+    # All rules on; override only where explicitly justified
+    excludes: []
+    config:
+      G101:
+        # Credential patterns — match our synthetic test data markers
+        pattern: "(?i)(secret|password|passwd|api_key|token|credential)"
+        ignore_entropy: false
+        entropy_threshold: "80.0"
+        per_char_threshold: "3.0"
+        truncate: "32"
+      G304:
+        # File path from variable — audit all uses
+        enabled: true
+
+  forbidigo:
+    forbid:
+      # Absolute bans — money safety
+      - pattern: "float32|float64"
+        msg: "BANNED: use AmountPaise (int64) for all monetary values. float is not safe for paise arithmetic."
+        pkg: "internal/ledger|internal/settlement|internal/recon"
+
+      # Time zone safety
+      - pattern: 'time\.Now\(\)'
+        msg: "BANNED: use clock.Now() (injectable clock interface). Direct time.Now() makes tests non-deterministic and IST cut-offs incorrect."
+        pkg: "internal/settlement|internal/ledger"
+
+      - pattern: '"UTC"'
+        msg: "BANNED: hardcoded UTC. Use Asia/Kolkata for all cut-off decisions. See internal/calendar."
+        pkg: "internal/settlement"
+
+      # SQL safety
+      - pattern: 'fmt\.Sprintf.*SELECT|fmt\.Sprintf.*INSERT|fmt\.Sprintf.*UPDATE|fmt\.Sprintf.*DELETE'
+        msg: "BANNED: SQL string formatting. Use sqlc-generated parameterized queries only."
+
+      # Idempotency safety
+      - pattern: 'checkIdempotencyKey'
+        msg: "BANNED: check-then-insert race. Use insert-first with ON CONFLICT. See internal/ledger/idempotency.go."
+
+      # Logging safety
+      - pattern: 'fmt\.Println|fmt\.Printf|log\.Print'
+        msg: "BANNED: use slog (structured logging). fmt.Print* bypasses log sanitization."
+
+      # Panic safety
+      - pattern: 'os\.Exit'
+        msg: "BANNED outside main(): os.Exit bypasses deferred cleanup and partial-write rollback."
+
+      # Generic type safety
+      - pattern: '\binterface\{\}|\bany\b'
+        msg: "BANNED for monetary types: use explicit types. 'any' hides float smuggling."
+        pkg: "internal/ledger|internal/settlement"
+
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+    exclude-functions:
+      # These are known-safe ignores (e.g. closing resources in defers)
+      - (io.Closer).Close
+      - (*os.File).Close
+
+  wrapcheck:
+    ignorePackageGlobs:
+      - "github.com/jackc/pgx/v5*"   # pgx errors are descriptive enough; we still wrap at module boundary
+
+  revive:
+    rules:
+      - name: exported
+        arguments: ["checkPrivateReceivers", "sayRepetitiveInsteadOfStutters"]
+      - name: error-strings       # lowercase error strings
+      - name: error-return        # error is last return value
+      - name: if-return           # simplify if-return patterns
+      - name: increment-decrement
+      - name: var-naming
+      - name: package-comments
+        disabled: true            # not required for internal packages
+
+  gocyclo:
+    min-complexity: 15
+
+  gocognit:
+    min-complexity: 20
+
+  exhaustive:
+    default-signifies-exhaustive: false
+    check:
+      - switch
+      - map
+
+  staticcheck:
+    checks:
+      - "all"
+      - "-SA1019"  # deprecated API usage — allow where no alternative exists
+
+issues:
+  max-same-issues: 0      # report all, not just first N
+  max-issues-per-linter: 0
+
+  exclude-rules:
+    # Test files: allow some relaxed rules
+    - path: "_test\\.go"
+      linters:
+        - forbidigo     # allow float in test assertions (e.g. comparing percentages)
+        - wrapcheck     # test helpers don't need to wrap errors
+
+    # Migration files: allow raw SQL
+    - path: "db/migrations/"
+      linters:
+        - forbidigo
+
+    # Week 0 ramp stubs: explicitly tagged
+    - text: "// RAMP-ONLY"
+      linters:
+        - forbidigo
+
+  exclude-dirs:
+    - vendor
+    - console   # TypeScript; linted separately

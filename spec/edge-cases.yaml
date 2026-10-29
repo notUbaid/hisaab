@@ -1,0 +1,299 @@
+# ONDC RSF 2.0 Edge Case Decision Table
+# Pinned spec version: NTS10 2.0.0 / BRD dated 2 Aug 2024
+# Citation: esf_2_0_explainer_and_brd_02_08_24.pdf
+
+spec_version: "RSF-2.0-BRD-2024-08-02"
+
+edge_cases:
+  - id: EC-01
+    title: "Buyer App submits /settle; Seller App does not submit"
+    description: "Buyer App submits settlement claims for an NP pair; Seller App fails to submit within the settlement window."
+    brd_section: "Section 4.2, Case 1"
+    given:
+      buyer_claim: "present"
+      seller_claim: "absent"
+      window_elapsed: true
+    expected_outcome: "Claims unmatched; Buyer App orders held for carry-forward or rejected per policy."
+    error_code: "COUNTERPART_MISSING"
+    policy_flags:
+      - name: carry_forward_days
+        default: 1
+        options: [0, 1, 2, 7]
+    status: active
+
+  - id: EC-02
+    title: "Seller App submits /settle; Buyer App does not submit"
+    description: "Seller App submits settlement claims; Buyer App does not submit within the cut-off."
+    brd_section: "Section 4.2, Case 2"
+    given:
+      buyer_claim: "absent"
+      seller_claim: "present"
+      window_elapsed: true
+    expected_outcome: "Claims unmatched; Seller App orders held for carry-forward or rejected per policy."
+    error_code: "COUNTERPART_MISSING"
+    policy_flags:
+      - name: carry_forward_days
+        default: 1
+        options: [0, 1, 2, 7]
+    status: active
+
+  - id: EC-03
+    title: "Both Buyer App and Seller App submit identical order sets"
+    description: "Both parties submit claims matching on Network Order ID and all amount components."
+    brd_section: "Section 4.2, Case 3"
+    given:
+      buyer_claim: "present"
+      seller_claim: "present"
+      orders_match: true
+      amounts_match: true
+    expected_outcome: "All orders matched 100%; proceed to Collector balance verification."
+    error_code: null
+    policy_flags: []
+    status: active
+
+  - id: EC-04
+    title: "Partial order set overlap between Buyer and Seller claims"
+    description: "Buyer claims orders 1 to 4; Seller claims orders 2 to 5. Overlap is orders 2, 3, 4."
+    brd_section: "Section 4.2, Case 4"
+    given:
+      buyer_orders: [1, 2, 3, 4]
+      seller_orders: [2, 3, 4, 5]
+    expected_outcome: "Orders 2, 3, 4 matched; Order 1 and Order 5 marked unmatched and carried forward."
+    error_code: "PARTIAL_MATCH"
+    policy_flags:
+      - name: allow_partial_batch
+        default: true
+        options: [true, false]
+    status: active
+
+  - id: EC-05
+    title: "Claim contains mixed counterparty NP pairs in single /settle"
+    description: "A single /settle request includes orders intended for multiple distinct seller NPs."
+    brd_section: "Section 4.2, Case 5"
+    given:
+      payload_np_pairs_count: 2
+    expected_outcome: "Entire /settle payload rejected synchronously with error code (invalid multi-NP claim)."
+    error_code: "INVALID_NP_PAIR_MIXED"
+    policy_flags: []
+    status: active
+
+  - id: EC-06
+    title: "Logistics fees bundled in core order /settle payload"
+    description: "A settlement payload includes both goods transaction and logistics service provider fees."
+    brd_section: "Section 4.2, Case 6"
+    given:
+      contains_logistics_component: true
+      payload_type: "retail_order"
+    expected_outcome: "Rejected; logistics settlements must be transmitted as separate /settle messages per spec."
+    error_code: "LOGISTICS_SEPARATION_REQUIRED"
+    policy_flags: []
+    status: active
+
+  - id: EC-07
+    title: "Claim missing mandatory schema fields"
+    description: "Payload fails ONDC Beckn RSF schema validation (missing message_id, timestamp, or currency)."
+    brd_section: "Section 4.2, Case 7"
+    given:
+      schema_valid: false
+    expected_outcome: "Synchronous NACK with schema error details from validator."
+    error_code: "SCHEMA_VALIDATION_FAILURE"
+    policy_flags: []
+    status: active
+
+  - id: EC-08
+    title: "Amount mismatch on matched Network Order ID"
+    description: "Both NPs submit Order 101, but Buyer claims ₹100 and Seller claims ₹120."
+    brd_section: "Section 4.2, Case 8"
+    given:
+      network_order_id: "101"
+      buyer_amount_paise: 10000
+      seller_amount_paise: 12000
+    expected_outcome: "Order marked amount_mismatch; excluded from net instruction; flagged for recon."
+    error_code: "AMOUNT_MISMATCH"
+    policy_flags:
+      - name: match_amount_tolerance_paise
+        default: 0
+        options: [0, 50, 100]
+    status: ambiguous
+
+  - id: EC-09
+    title: "Late counterpart arrival within carry-forward window"
+    description: "Buyer submitted Day T; Seller submits Day T+1 before carry-forward expires."
+    brd_section: "Section 4.2, Case 9"
+    given:
+      carried_order_age_days: 1
+      max_carry_forward_days: 2
+    expected_outcome: "Order successfully matched in Day T+1 batch."
+    error_code: null
+    policy_flags: []
+    status: active
+
+  - id: EC-10
+    title: "Counterpart arrives after carry-forward expiration"
+    description: "Seller claim arrives on Day T+5, exceeding maximum retention policy."
+    brd_section: "Section 4.2, Case 10"
+    given:
+      carried_order_age_days: 5
+      max_carry_forward_days: 2
+    expected_outcome: "Order marked expired_unmatched; moved to exception queue for manual recon."
+    error_code: "CARRY_FORWARD_EXPIRED"
+    policy_flags: []
+    status: active
+
+  - id: EC-11
+    title: "Duplicate /settle submission with identical message_id"
+    description: "Network Participant replays exact same /settle request after network timeout."
+    brd_section: "Section 4.2, Case 11"
+    given:
+      idempotency_key_exists: true
+      payload_hash_matches: true
+    expected_outcome: "Idempotent replay; return previous stored ACK/response; zero duplicate postings."
+    error_code: null
+    policy_flags: []
+    status: active
+
+  - id: EC-12
+    title: "Insufficient balance in Collector settlement account"
+    description: "Collector ondc_settlement balance is ₹150, but matched obligations total ₹300."
+    brd_section: "Section 4.2, Case 12"
+    given:
+      collector_balance_paise: 15000
+      matched_total_paise: 30000
+    expected_outcome: "All matched orders rejected (default all-or-nothing); no partial settlement instructed."
+    error_code: "INSUFFICIENT_BALANCE"
+    policy_flags:
+      - name: partial_fill_allowed
+        default: false
+        options: [true, false]
+    status: ambiguous
+
+  - id: EC-13
+    title: "Bank timeout on instruction submission"
+    description: "SA dispatches net instruction to bank; bank API times out without HTTP response."
+    brd_section: "Section 4.2, Case 13"
+    given:
+      bank_response: "timeout"
+    expected_outcome: "Instruction stays pending; outbox retries with exponential backoff; no duplicate payment."
+    error_code: "BANK_TIMEOUT"
+    policy_flags: []
+    status: active
+
+  - id: EC-14
+    title: "Bank returns explicit failure (Account frozen / Invalid IFSC)"
+    description: "Bank API returns explicit failure status code for net transfer instruction."
+    brd_section: "Section 4.2, Case 14"
+    given:
+      bank_status: "failed"
+      bank_reason: "ACCOUNT_FROZEN"
+    expected_outcome: "Instruction marked failed; obligations transferred to SA suspense account; recon alert."
+    error_code: "BANK_INSTRUCTION_REJECTED"
+    policy_flags: []
+    status: active
+
+  - id: EC-15
+    title: "Duplicate credit notification from bank"
+    description: "Bank sends two successive success callbacks for the same instruction ID."
+    brd_section: "Section 4.2, Case 15"
+    given:
+      instruction_already_settled: true
+      duplicate_bank_message: true
+    expected_outcome: "Second callback acknowledged as duplicate; ledger postings remain unmodified."
+    error_code: null
+    policy_flags: []
+    status: active
+
+  - id: EC-16
+    title: "Refund claim with funds still in Collector settlement account"
+    description: "Customer cancelled before forward payout was dispatched to Seller."
+    brd_section: "Section 4.2, Case 16"
+    given:
+      order_settled_forward: false
+    expected_outcome: "Forward claim voided; funds refunded directly from Collector account to Buyer clearing."
+    error_code: null
+    policy_flags: []
+    status: active
+
+  - id: EC-17
+    title: "Refund claim after forward payout already credited to Seller"
+    description: "Customer refund approved after funds have moved to Seller operative account."
+    brd_section: "Section 4.2, Case 17"
+    given:
+      order_settled_forward: true
+    expected_outcome: "Reverse settlement claim generated; Seller settlement account debited; balance checked."
+    error_code: null
+    policy_flags: []
+    status: active
+
+  - id: EC-18
+    title: "Refund claim with insufficient Seller balance"
+    description: "Reverse settlement fails because Seller App settlement account has inadequate funds."
+    brd_section: "Section 4.2, Case 18"
+    given:
+      seller_balance_paise: 2000
+      refund_required_paise: 10000
+    expected_outcome: "Reverse claim held; clawback queued; exception logged in recon queue."
+    error_code: "SELLER_INSUFFICIENT_FUNDS_FOR_REFUND"
+    policy_flags: []
+    status: active
+
+  - id: EC-19
+    title: "Claim submitted on Indian Bank Holiday or Weekend"
+    description: "Claim timestamp lands on an RBI bank holiday or outside RTGS/NEFT window."
+    brd_section: "Section 4.2, Case 19"
+    given:
+      is_bank_holiday: true
+    expected_outcome: "Claim validated and matched; value date shifted to next Indian business day."
+    error_code: null
+    policy_flags:
+      - name: business_day_convention
+        default: "following"
+        options: ["following", "modified_following"]
+    status: active
+
+  - id: EC-20
+    title: "Cut-off timestamp boundary race (IST 23:59:59)"
+    description: "Claims arrive within 50ms of IST midnight cut-off."
+    brd_section: "Section 4.2, Case 20"
+    given:
+      timestamp_ist: "23:59:59.950"
+    expected_outcome: "Deterministic batch assignment based on monotonic DB receive timestamp in IST."
+    error_code: null
+    policy_flags: []
+    status: active
+
+  - id: EC-21
+    title: "Seller on Record (SoR) account validation failure"
+    description: "Order components include SoR payout, but SoR bank details fail format check."
+    brd_section: "Section 4.2, Case 21"
+    given:
+      sor_account_valid: false
+    expected_outcome: "Order matched; SoR leg routed to suspense; Seller commission settled normally."
+    error_code: "SOR_ACCOUNT_INVALID"
+    policy_flags: []
+    status: active
+
+  - id: EC-22
+    title: "Deduction leg mismatch (GST TCS / TDS calculated differently)"
+    description: "Buyer and Seller calculate different withholding tax amounts on same order."
+    brd_section: "Section 4.2, Case 22"
+    given:
+      buyer_tcs_paise: 100
+      seller_tcs_paise: 95
+    expected_outcome: "Net payable adjusted according to active tax policy or routed to discrepancy pool."
+    error_code: "TAX_DEDUCTION_MISMATCH"
+    policy_flags:
+      - name: tax_reconciliation_mode
+        default: "statutory_rate"
+        options: ["statutory_rate", "strict_match", "provisional_hold"]
+    status: ambiguous
+
+  - id: EC-23
+    title: "System crash mid-batch between gross order legs and net batch posting"
+    description: "Node or DB connection fails after order sub-ledger entries are written but before net posting commits."
+    brd_section: "Section 4.2, Case 23"
+    given:
+      crash_point: "after_subledger_before_net"
+    expected_outcome: "Atomic rollback by DB transaction; upon restart, batch resumes cleanly with zero invariant violations."
+    error_code: "TRANSACTION_ABORT_RECOVERED"
+    policy_flags: []
+    status: active

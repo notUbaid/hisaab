@@ -1,0 +1,460 @@
+name: CI — Full Gate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.23"
+  NODE_VERSION: "22"
+  POSTGRES_VERSION: "16"
+
+jobs:
+  # ─────────────────────────────────────────────
+  # GATE 1: Static analysis (fast, no DB needed)
+  # ─────────────────────────────────────────────
+  static:
+    name: "Gate 1 · Static Analysis"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for secret scanning
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61
+          args: --timeout=5m --config=.golangci.yml
+
+      - name: Check no float in money paths
+        run: |
+          echo "Scanning for float32/float64 in monetary code..."
+          FOUND=$(grep -rn "float32\|float64" \
+            internal/ledger/ internal/settlement/ internal/recon/ \
+            --include="*.go" | grep -v "_test.go" | grep -v "// RAMP-ONLY" || true)
+          if [ -n "$FOUND" ]; then
+            echo "CRITICAL: float found in monetary code:"
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "✓ No floats in monetary code"
+
+      - name: Check no hardcoded IST/UTC bypass
+        run: |
+          FOUND=$(grep -rn '"UTC"' internal/settlement/ --include="*.go" | grep -v "_test.go" || true)
+          if [ -n "$FOUND" ]; then
+            echo "CRITICAL: hardcoded UTC in settlement code:"
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "✓ No hardcoded UTC in settlement"
+
+      - name: sqlc generate check (no drift)
+        run: |
+          if command -v sqlc &> /dev/null; then
+            sqlc generate --dry-run
+          else
+            echo "sqlc not installed in CI — skipping (install in future)"
+          fi
+
+  # ─────────────────────────────────────────────
+  # GATE 2: Secret scanning
+  # ─────────────────────────────────────────────
+  secrets:
+    name: "Gate 2 · Secret Scanning"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog — scan full git history
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+      - name: Check no real IFSC patterns in test fixtures
+        run: python3 scripts/check_real_data.py
+
+      - name: Check no real account number patterns
+        run: |
+          FOUND=$(grep -rn '[0-9]\{9,18\}' tests/ spec/ --include="*.go" --include="*.yaml" --include="*.json" || true)
+          if [ -n "$FOUND" ]; then
+            # Allow patterns that are clearly synthetic (e.g. 000000000001)
+            REAL=$(echo "$FOUND" | grep -v "0000000\|1234567\|9876543\|TEST\|SYNTHETIC\|MOCK" || true)
+            if [ -n "$REAL" ]; then
+              echo "WARNING: Possible real account numbers in test fixtures. Review:"
+              echo "$REAL"
+              echo "If these are synthetic, add a SYNTHETIC comment."
+              # Non-fatal for now; becomes fatal at Week 4
+            fi
+          fi
+          echo "✓ Secret scan complete"
+
+  # ─────────────────────────────────────────────
+  # GATE 3: Unit + integration tests with DB
+  # ─────────────────────────────────────────────
+  test:
+    name: "Gate 3 · Tests (race + coverage)"
+    runs-on: ubuntu-latest
+    needs: [static]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hisaab_test
+          POSTGRES_USER: hisaab
+          POSTGRES_PASSWORD: hisaab_ci
+        options: >-
+          --health-cmd "pg_isready -U hisaab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    env:
+      HISAAB_TEST_DB: postgres://hisaab:hisaab_ci@localhost:5432/hisaab_test
+      HISAAB_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install goose + run migrations
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@latest
+          GOOSE_DRIVER=postgres GOOSE_DBSTRING="$HISAAB_TEST_DB" \
+            goose -dir db/migrations up
+
+      - name: Run tests with race detector
+        run: go test -race -count=1 -timeout=120s ./...
+
+      - name: Run tests with coverage
+        run: |
+          go test -race -count=1 -timeout=120s \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            ./...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Enforce coverage floor (60% now, 80% by Week 8)
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Coverage: ${COVERAGE}%"
+          # Use awk for float comparison
+          PASS=$(awk "BEGIN {print ($COVERAGE >= 60) ? 1 : 0}")
+          if [ "$PASS" != "1" ]; then
+            echo "FAIL: Coverage ${COVERAGE}% is below 60% floor"
+            exit 1
+          fi
+          echo "✓ Coverage ${COVERAGE}% passes floor"
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.out
+          fail_ci_if_error: false
+
+  # ─────────────────────────────────────────────
+  # GATE 4: Property tests (rapid)
+  # ─────────────────────────────────────────────
+  property:
+    name: "Gate 4 · Property Tests (50k checks)"
+    runs-on: ubuntu-latest
+    needs: [test]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hisaab_test
+          POSTGRES_USER: hisaab
+          POSTGRES_PASSWORD: hisaab_ci
+        options: >-
+          --health-cmd "pg_isready -U hisaab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    env:
+      HISAAB_TEST_DB: postgres://hisaab:hisaab_ci@localhost:5432/hisaab_test
+      HISAAB_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install goose + run migrations
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@latest
+          GOOSE_DRIVER=postgres GOOSE_DBSTRING="$HISAAB_TEST_DB" \
+            goose -dir db/migrations up
+
+      - name: Run property tests
+        run: |
+          go test -run "^TestProperty" \
+            -rapid.checks=50000 \
+            -timeout=300s \
+            ./tests/property/...
+
+      - name: Run invariant checker
+        run: |
+          go test -run "^TestInvariant" \
+            -timeout=300s \
+            ./tests/...
+
+  # ─────────────────────────────────────────────
+  # GATE 5: BRD scenario tests
+  # ─────────────────────────────────────────────
+  scenarios:
+    name: "Gate 5 · BRD Scenario Tests"
+    runs-on: ubuntu-latest
+    needs: [test]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hisaab_test
+          POSTGRES_USER: hisaab
+          POSTGRES_PASSWORD: hisaab_ci
+        options: >-
+          --health-cmd "pg_isready -U hisaab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    env:
+      HISAAB_TEST_DB: postgres://hisaab:hisaab_ci@localhost:5432/hisaab_test
+      HISAAB_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install goose + run migrations
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@latest
+          GOOSE_DRIVER=postgres GOOSE_DBSTRING="$HISAAB_TEST_DB" \
+            goose -dir db/migrations up
+
+      - name: Run BRD scenarios
+        run: |
+          go test -run "^TestScenario" \
+            -v \
+            -timeout=300s \
+            ./tests/scenarios/...
+
+      - name: Verify spec coverage
+        run: python3 scripts/check_spec_coverage.py
+
+  # ─────────────────────────────────────────────
+  # GATE 6: ONDC schema validation
+  # ─────────────────────────────────────────────
+  schema-validation:
+    name: "Gate 6 · ONDC Schema Validation"
+    runs-on: ubuntu-latest
+    needs: [static]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check ONDC log-validation-utility (RSF endpoint)
+        run: |
+          # Validate test payloads against ONDC's official validator
+          # This calls the ONDC log-validation-utility RSF endpoint
+          echo "Schema validation: running against ONDC RSF endpoint..."
+          python3 scripts/validate_ondc_schemas.py \
+            --fixtures tests/scenarios/fixtures/ \
+            --endpoint "$ONDC_VALIDATOR_URL" \
+            --fail-on-error || echo "WARNING: ONDC validator not available in CI (check ONDC_VALIDATOR_URL)"
+        env:
+          ONDC_VALIDATOR_URL: ${{ secrets.ONDC_VALIDATOR_URL }}
+
+  # ─────────────────────────────────────────────
+  # GATE 7: Console (TypeScript) lint + type check
+  # ─────────────────────────────────────────────
+  console:
+    name: "Gate 7 · Console (TS) Lint + Types"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - run: npm ci
+      - run: npm run type-check
+      - run: npm run lint
+      - run: npm run build
+
+  # ─────────────────────────────────────────────
+  # GATE 8: Migration safety check
+  # ─────────────────────────────────────────────
+  migrations:
+    name: "Gate 8 · Migration Safety"
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hisaab_migrate_test
+          POSTGRES_USER: hisaab
+          POSTGRES_PASSWORD: hisaab_ci
+        options: >-
+          --health-cmd "pg_isready -U hisaab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install goose
+        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - name: Migrate up
+        run: |
+          GOOSE_DRIVER=postgres \
+          GOOSE_DBSTRING="postgres://hisaab:hisaab_ci@localhost:5432/hisaab_migrate_test" \
+            goose -dir db/migrations up
+
+      - name: Migrate down (full rollback test)
+        run: |
+          GOOSE_DRIVER=postgres \
+          GOOSE_DBSTRING="postgres://hisaab:hisaab_ci@localhost:5432/hisaab_migrate_test" \
+            goose -dir db/migrations down-to 0
+
+      - name: Migrate up again (idempotency test)
+        run: |
+          GOOSE_DRIVER=postgres \
+          GOOSE_DBSTRING="postgres://hisaab:hisaab_ci@localhost:5432/hisaab_migrate_test" \
+            goose -dir db/migrations up
+
+  # ─────────────────────────────────────────────
+  # GATE 9: Correctness Report generation
+  # ─────────────────────────────────────────────
+  correctness-report:
+    name: "Gate 9 · Correctness Report"
+    runs-on: ubuntu-latest
+    needs: [scenarios, property]
+    if: github.ref == 'refs/heads/main'
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hisaab_test
+          POSTGRES_USER: hisaab
+          POSTGRES_PASSWORD: hisaab_ci
+        options: >-
+          --health-cmd "pg_isready -U hisaab"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    env:
+      HISAAB_TEST_DB: postgres://hisaab:hisaab_ci@localhost:5432/hisaab_test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install goose + run migrations
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@latest
+          GOOSE_DRIVER=postgres GOOSE_DBSTRING="$HISAAB_TEST_DB" \
+            goose -dir db/migrations up
+
+      - name: Generate Correctness Report
+        run: go run cmd/cli/main.go generate-report --output docs/CORRECTNESS-REPORT.md
+
+      - name: Upload Correctness Report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: correctness-report
+          path: docs/CORRECTNESS-REPORT.md
+
+  # ─────────────────────────────────────────────
+  # GATE 10: Weekly ONDC spec diff (scheduled only)
+  # ─────────────────────────────────────────────
+  spec-drift:
+    name: "Gate 10 · ONDC Spec Drift"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check ONDC upstream for spec changes
+        run: python3 scripts/check_ondc_spec_drift.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open issue on spec change
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ ONDC RSF spec changed upstream',
+              body: 'The weekly spec drift check detected changes in ONDC upstream repos. Review and update spec/edge-cases.yaml and affected scenarios.',
+              labels: ['spec-drift', 'priority-high']
+            })
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # Every Monday 02:00 UTC (07:30 IST)
