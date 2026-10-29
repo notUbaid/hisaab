@@ -1,5 +1,5 @@
 .PHONY: up down migrate migrate-down migrate-status test test-race test-property \
-        test-invariants test-scenarios bench lint install-hooks check-real-data \
+        test-invariants test-scenarios test-crash bench lint install-hooks check-real-data \
         check-spec-coverage sqlc seed-calendar verify-merkle security-scan setup \
         fmt vet check-float generate-report check-spec-drift
 
@@ -47,6 +47,10 @@ test-invariants:
 test-scenarios:
 	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -run "^TestScenario" \
 	  -v -timeout=300s ./tests/scenarios/...
+
+test-crash:
+	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -run "^TestCrashPoint" \
+	  -v -timeout=300s ./tests/crash/...
 
 bench:
 	HISAAB_TEST_DB="$(TEST_DB_URL)" go test ./tests/bench/... \

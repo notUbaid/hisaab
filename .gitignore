@@ -50,6 +50,7 @@ console/node_modules/
 console/.next/
 console/.env.local
 console/out/
+*.tsbuildinfo
 
 # ─── Python scripts ────────────────────────────────────────────────
 __pycache__/
