@@ -2,14 +2,40 @@ package scenariodsl_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ubaid/hisaab/internal/scenariodsl"
 )
 
+func findScenarioPath(t *testing.T, filename string) string {
+	candidates := []string{
+		filepath.Join("spec", "scenarios", filename),
+		filepath.Join("..", "..", "spec", "scenarios", filename),
+		filepath.Join(".", "spec", "scenarios", filename),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	dir, err := os.Getwd()
+	if err == nil {
+		for i := 0; i < 5; i++ {
+			c := filepath.Join(dir, "spec", "scenarios", filename)
+			if _, err := os.Stat(c); err == nil {
+				return c
+			}
+			dir = filepath.Dir(dir)
+		}
+	}
+	t.Fatalf("could not locate scenario file %s in candidate paths", filename)
+	return ""
+}
+
 func TestRunner_EC01_MissingCounterpart(t *testing.T) {
-	path := filepath.Join("..", "..", "spec", "scenarios", "ec-01.yaml")
+	path := findScenarioPath(t, "ec-01.yaml")
 	sc, err := scenariodsl.LoadScenarioFile(path)
 	if err != nil {
 		t.Fatalf("failed to load ec-01.yaml: %v", err)
@@ -33,7 +59,7 @@ func TestRunner_EC01_MissingCounterpart(t *testing.T) {
 }
 
 func TestRunner_EC03_IdenticalMatchAndSettle(t *testing.T) {
-	path := filepath.Join("..", "..", "spec", "scenarios", "ec-03.yaml")
+	path := findScenarioPath(t, "ec-03.yaml")
 	sc, err := scenariodsl.LoadScenarioFile(path)
 	if err != nil {
 		t.Fatalf("failed to load ec-03.yaml: %v", err)
@@ -60,7 +86,7 @@ func TestRunner_EC03_IdenticalMatchAndSettle(t *testing.T) {
 }
 
 func TestRunner_EC04_PartialOverlap(t *testing.T) {
-	path := filepath.Join("..", "..", "spec", "scenarios", "ec-04.yaml")
+	path := findScenarioPath(t, "ec-04.yaml")
 	sc, err := scenariodsl.LoadScenarioFile(path)
 	if err != nil {
 		t.Fatalf("failed to load ec-04.yaml: %v", err)
@@ -84,7 +110,7 @@ func TestRunner_EC04_PartialOverlap(t *testing.T) {
 }
 
 func TestRunner_EC12_InsufficientBalance(t *testing.T) {
-	path := filepath.Join("..", "..", "spec", "scenarios", "ec-12.yaml")
+	path := findScenarioPath(t, "ec-12.yaml")
 	sc, err := scenariodsl.LoadScenarioFile(path)
 	if err != nil {
 		t.Fatalf("failed to load ec-12.yaml: %v", err)

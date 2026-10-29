@@ -56,10 +56,11 @@ def main():
     go_test_suites = [
         ("Core Double-Entry Ledger & Memory Engine (M1)", "internal/ledger"),
         ("Calendar Engine & RBI Banking Rules", "internal/calendar"),
-        ("SA Simulator Matching Engine (M2)", "internal/settlement"),
-        ("NP Toolkit & Logistics Separator (M3)", "internal/nptoolkit"),
+        ("SA Simulator Matching Engine & Refunds (M2)", "internal/settlement"),
+        ("NP Toolkit, Logistics & Tax Withholding (M3)", "internal/nptoolkit"),
         ("Three-Way Recon Engine (M4)", "internal/recon"),
         ("Verification Harness & Failpoints (M5)", "internal/verification"),
+        ("Formal Mutation Testing Harness (M5.8)", "tests/mutation"),
         ("Declarative Scenario DSL Runner (M0.2)", "internal/scenariodsl"),
         ("SA Simulator API Service Health Probes", "cmd/api"),
         ("Transactional Outbox Worker", "cmd/worker"),
