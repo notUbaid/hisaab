@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -18,6 +18,13 @@ import {
 } from "lucide-react";
 import { ParticipantPerspective, PERSPECTIVES } from "@/lib/rbac";
 import { SCENARIOS_DATA } from "@/lib/scenarioData";
+
+interface NavItem {
+  name: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  shortcut: string;
+}
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -39,7 +46,7 @@ export function AppShell({ children }: AppShellProps) {
   const [isCmdKOpen, setIsCmdKOpen] = useState(false);
   const [cmdSearchQuery, setCmdSearchQuery] = useState("");
 
-  const navItems = useMemo(
+  const navItems = useMemo<NavItem[]>(
     () => [
       { name: "Executive Overview", href: "/", icon: LayoutDashboard, shortcut: "1" },
       { name: "Exceptions Triage", href: "/exceptions", icon: AlertTriangle, shortcut: "2" },
