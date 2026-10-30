@@ -40,20 +40,20 @@ const (
 
 // BatchSummary models the persistent status of a settlement run across an NP pair.
 type BatchSummary struct {
-	BatchID          string             `json:"batch_id"`
-	NPPairID         string             `json:"np_pair_id"`
-	SettlementDate   string             `json:"settlement_date"`
-	Status           BatchStatus        `json:"status"`
-	MatchedCount     int                `json:"matched_count"`
-	UnmatchedCount   int                `json:"unmatched_count"`
-	TotalGrossPaise  ledger.AmountPaise `json:"total_gross_paise"`
-	NetPayoutPaise   ledger.AmountPaise `json:"net_payout_paise"`
-	TotalTaxPaise    ledger.AmountPaise `json:"total_tax_paise"`
-	Instructions     []NetInstruction   `json:"instructions"`
-	MatchedOrders    []MatchedOrder     `json:"matched_orders"`
-	UnmatchedOrders  []MatchedOrder     `json:"unmatched_orders"`
-	SettledAt        *time.Time         `json:"settled_at,omitempty"`
-	CreatedAt        time.Time          `json:"created_at"`
+	BatchID         string             `json:"batch_id"`
+	NPPairID        string             `json:"np_pair_id"`
+	SettlementDate  string             `json:"settlement_date"`
+	Status          BatchStatus        `json:"status"`
+	MatchedCount    int                `json:"matched_count"`
+	UnmatchedCount  int                `json:"unmatched_count"`
+	TotalGrossPaise ledger.AmountPaise `json:"total_gross_paise"`
+	NetPayoutPaise  ledger.AmountPaise `json:"net_payout_paise"`
+	TotalTaxPaise   ledger.AmountPaise `json:"total_tax_paise"`
+	Instructions    []NetInstruction   `json:"instructions"`
+	MatchedOrders   []MatchedOrder     `json:"matched_orders"`
+	UnmatchedOrders []MatchedOrder     `json:"unmatched_orders"`
+	SettledAt       *time.Time         `json:"settled_at,omitempty"`
+	CreatedAt       time.Time          `json:"created_at"`
 }
 
 // OutboxItem represents a staged event emitted atomically alongside ledger postings.
@@ -75,11 +75,11 @@ type Orchestrator struct {
 	failpoints FailpointTrigger
 
 	// Persistent/In-memory indices
-	claimsByID    map[string]*StoredClaimRecord        // key: message_id
-	claimsByPair  map[string]map[string]*SettleClaimPayload // pairKey -> ("buyer_app" | "seller_app") -> claim
-	batches       map[string]*BatchSummary             // key: batch_id
-	outboxItems   []OutboxItem
-	nextOutboxID  int64
+	claimsByID   map[string]*StoredClaimRecord             // key: message_id
+	claimsByPair map[string]map[string]*SettleClaimPayload // pairKey -> ("buyer_app" | "seller_app") -> claim
+	batches      map[string]*BatchSummary                  // key: batch_id
+	outboxItems  []OutboxItem
+	nextOutboxID int64
 }
 
 // NewOrchestrator creates a new settlement orchestrator instance.
@@ -98,16 +98,16 @@ func NewOrchestrator(
 	}
 
 	return &Orchestrator{
-		ledger:        eng,
-		matcher:       matcher,
-		calendar:      cal,
-		taxCalc:       taxCalc,
-		failpoints:    fp,
-		claimsByID:    make(map[string]*StoredClaimRecord),
-		claimsByPair:  make(map[string]map[string]*SettleClaimPayload),
-		batches:       make(map[string]*BatchSummary),
-		outboxItems:   make([]OutboxItem, 0),
-		nextOutboxID:  1,
+		ledger:       eng,
+		matcher:      matcher,
+		calendar:     cal,
+		taxCalc:      taxCalc,
+		failpoints:   fp,
+		claimsByID:   make(map[string]*StoredClaimRecord),
+		claimsByPair: make(map[string]map[string]*SettleClaimPayload),
+		batches:      make(map[string]*BatchSummary),
+		outboxItems:  make([]OutboxItem, 0),
+		nextOutboxID: 1,
 	}
 }
 

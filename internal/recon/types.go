@@ -81,12 +81,12 @@ type ReconException struct {
 
 // ThreeWayReconResult aggregates the outcomes of a three-way reconciliation pass.
 type ThreeWayReconResult struct {
-	TotalChecked     int                      `json:"total_checked"`
-	MatchedCount     int                      `json:"matched_count"`
-	TotalExceptions  int                      `json:"total_exceptions"`
-	Exceptions       []ReconException         `json:"exceptions"`
-	ExceptionsByClass map[ExceptionClass]int  `json:"exceptions_by_class"`
-	ReconciledAt     time.Time                `json:"reconciled_at"`
+	TotalChecked      int                    `json:"total_checked"`
+	MatchedCount      int                    `json:"matched_count"`
+	TotalExceptions   int                    `json:"total_exceptions"`
+	Exceptions        []ReconException       `json:"exceptions"`
+	ExceptionsByClass map[ExceptionClass]int `json:"exceptions_by_class"`
+	ReconciledAt      time.Time              `json:"reconciled_at"`
 }
 
 // AdjustmentProposal represents a maker-checker proposed ledger correction.

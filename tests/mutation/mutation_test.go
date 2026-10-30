@@ -12,11 +12,11 @@ import (
 
 // MutantDef represents a defect intentionally seeded to test whether invariant verifiers catch it.
 type MutantDef struct {
-	ID                 string
-	Description        string
-	TargetInvariant    string
-	ExpectedKilledBy   string
-	ExecuteAndDetect   func(t *testing.T) bool // returns true if the invariant checker caught (killed) the mutant
+	ID               string
+	Description      string
+	TargetInvariant  string
+	ExpectedKilledBy string
+	ExecuteAndDetect func(t *testing.T) bool // returns true if the invariant checker caught (killed) the mutant
 }
 
 func TestMutationSuite_KillAllMutants(t *testing.T) {
@@ -104,8 +104,8 @@ func TestMutationSuite_KillAllMutants(t *testing.T) {
 			ExecuteAndDetect: func(t *testing.T) bool {
 				// Seeded defect: TotalMatched = 100000, TotalBFF = 2000 => expected net 98000, but instructed 97999
 				batch := &settlement.BatchSettlementResult{
-					TotalMatched: 100000,
-					TotalBFF:     2000,
+					TotalMatched:  100000,
+					TotalBFF:      2000,
 					BalancePassed: true,
 					MatchedOrders: []settlement.MatchedOrder{
 						{NetworkOrderID: "O1", OrderAmountPaise: 100000, BFFPaise: 2000},

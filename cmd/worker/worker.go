@@ -19,9 +19,9 @@ import (
 type OutboxEventType string
 
 const (
-	EventBankInstruction      OutboxEventType = "settlement.bank_instruction"
+	EventBankInstruction       OutboxEventType = "settlement.bank_instruction"
 	EventBecknOnSettleCallback OutboxEventType = "beckn.on_settle_callback"
-	EventReconException       OutboxEventType = "recon.exception_notification"
+	EventReconException        OutboxEventType = "recon.exception_notification"
 )
 
 // OnSettleCallbackEvent models the Beckn /on_settle event payload.

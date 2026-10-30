@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import MoneyCell from "@/components/MoneyCell";
 import { formatPaiseToINR, ParticipantPerspective, PERSPECTIVES } from "@/lib/rbac";
 import {
@@ -60,6 +60,21 @@ export default function SettlementWorkbench() {
     });
   }, [searchQuery, categoryFilter]);
 
+  // Advance to Next RBI Business Day
+  const advanceBusinessDay = useCallback(() => {
+    const current = new Date(simulatedDate);
+    current.setDate(current.getDate() + 1);
+    // If weekend (Saturday 6, Sunday 0), roll forward to Monday
+    if (current.getDay() === 6) {
+      current.setDate(current.getDate() + 2);
+    } else if (current.getDay() === 0) {
+      current.setDate(current.getDate() + 1);
+    }
+    const iso = current.toISOString();
+    setSimulatedDate(iso);
+    setIsHoliday(false);
+  }, [simulatedDate]);
+
   // Keyboard navigation for scenario list (Up / Down arrows)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -86,22 +101,7 @@ export default function SettlementWorkbench() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [filteredScenarios, selectedScenarioId]);
-
-  // Advance to Next RBI Business Day
-  const advanceBusinessDay = () => {
-    const current = new Date(simulatedDate);
-    current.setDate(current.getDate() + 1);
-    // If weekend (Saturday 6, Sunday 0), roll forward to Monday
-    if (current.getDay() === 6) {
-      current.setDate(current.getDate() + 2);
-    } else if (current.getDay() === 0) {
-      current.setDate(current.getDate() + 1);
-    }
-    const iso = current.toISOString();
-    setSimulatedDate(iso);
-    setIsHoliday(false);
-  };
+  }, [filteredScenarios, selectedScenarioId, advanceBusinessDay]);
 
   // Run Scenario Trigger (Calls API or local verification)
   const handleRunScenario = async () => {
@@ -680,7 +680,7 @@ export default function SettlementWorkbench() {
                   Settlement Breakdown (Invariant 13)
                 </h3>
                 <p className="text-[11px] text-zinc-500 mt-0.5">
-                  Gross-to-net waterfall with sub-paise RoundHalfEven Banker's rounding.
+                  Gross-to-net waterfall with sub-paise RoundHalfEven Banker&apos;s rounding.
                 </p>
               </div>
 

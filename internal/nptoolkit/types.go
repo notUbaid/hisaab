@@ -39,11 +39,11 @@ type ValidationIssue struct {
 
 // PreFlightReport summarizes the offline pre-flight audit of a /settle claim.
 type PreFlightReport struct {
-	IsValid          bool              `json:"is_valid"`
-	NPPairID         string            `json:"np_pair_id"`
-	TotalOrders      int               `json:"total_orders"`
+	IsValid          bool               `json:"is_valid"`
+	NPPairID         string             `json:"np_pair_id"`
+	TotalOrders      int                `json:"total_orders"`
 	TotalAmountPaise ledger.AmountPaise `json:"total_amount_paise"`
-	Issues           []ValidationIssue `json:"issues"`
+	Issues           []ValidationIssue  `json:"issues"`
 }
 
 // BalanceForecast projects whether the Collector settlement balance can cover matched claims.

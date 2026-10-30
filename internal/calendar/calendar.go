@@ -57,7 +57,7 @@ func (m *MockClock) Now() time.Time {
 type HolidayRecord struct {
 	Date        string `json:"date"`        // YYYY-MM-DD
 	Description string `json:"description"` // Holiday name
-	SourceURL   string `json:"source_url"`   // Citation (RBI Notification / Gazette)
+	SourceURL   string `json:"source_url"`  // Citation (RBI Notification / Gazette)
 	Year        int    `json:"year"`
 }
 

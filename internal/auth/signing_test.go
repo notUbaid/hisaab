@@ -203,4 +203,3 @@ func TestRequestSigner_PrematureAndTTLBounds(t *testing.T) {
 		t.Fatal("Expected error for premature signature created in future, got nil")
 	}
 }
-

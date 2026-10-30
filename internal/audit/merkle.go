@@ -10,10 +10,10 @@ import (
 )
 
 var (
-	ErrEmptyEntrySet    = errors.New("merkle: cannot compute tree for empty entry set")
-	ErrInvalidProof     = errors.New("merkle: invalid proof structure")
-	ErrProofFailed      = errors.New("merkle: cryptographic proof verification failed")
-	ErrLeafOutOfBounds  = errors.New("merkle: leaf index out of bounds")
+	ErrEmptyEntrySet   = errors.New("merkle: cannot compute tree for empty entry set")
+	ErrInvalidProof    = errors.New("merkle: invalid proof structure")
+	ErrProofFailed     = errors.New("merkle: cryptographic proof verification failed")
+	ErrLeafOutOfBounds = errors.New("merkle: leaf index out of bounds")
 )
 
 // Domain separation prefixes (RFC 6962 standard) to prevent second-preimage attacks
@@ -60,10 +60,10 @@ type MerkleInclusionProof struct {
 
 // MerkleTree represents a balanced binary Merkle tree over a batch's journal entries.
 type MerkleTree struct {
-	Leaves   [][]byte     // SHA-256(0x00 || entry)
-	Levels   [][][]byte   // Levels[0] = Leaves, Levels[len-1] = [Root]
-	Root     []byte       // Root hash bytes
-	RootHex  string       // Hex-encoded root hash
+	Leaves  [][]byte   // SHA-256(0x00 || entry)
+	Levels  [][][]byte // Levels[0] = Leaves, Levels[len-1] = [Root]
+	Root    []byte     // Root hash bytes
+	RootHex string     // Hex-encoded root hash
 }
 
 // BuildMerkleTree builds a tamper-evident Merkle tree from canonical entry bytes.
