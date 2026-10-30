@@ -4,22 +4,41 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ubaid/hisaab/internal/auth"
 	"github.com/ubaid/hisaab/internal/calendar"
 	"github.com/ubaid/hisaab/internal/ledger"
 	"github.com/ubaid/hisaab/internal/nptoolkit"
+	"github.com/ubaid/hisaab/internal/scenariodsl"
 	"github.com/ubaid/hisaab/internal/settlement"
 )
 
 type defaultTaxAdapter struct {
 	cfg nptoolkit.TaxConfig
+}
+
+func (a *defaultTaxAdapter) CalculateOrderTax(orderAmount, commission, bff ledger.AmountPaise) (*settlement.TaxBreakdown, error) {
+	res, err := nptoolkit.CalculateTaxWithholding(orderAmount, commission, bff, a.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("tax calculation failed: %w", err)
+	}
+	return &settlement.TaxBreakdown{
+		OrderAmountPaise: res.OrderAmountPaise,
+		CommissionPaise:  res.CommissionPaise,
+		BFFPaise:         res.BFFPaise,
+		TDSPaise:         res.TDSPaise,
+		GSTTCSPaise:      res.GSTTCSPaise,
+		TotalTaxPaise:    res.TotalTaxPaise,
+	}, nil
 }
 
 func (a *defaultTaxAdapter) CalculateOrderTaxPaise(orderAmount, commission, bff ledger.AmountPaise) ledger.AmountPaise {
@@ -52,19 +71,62 @@ func main() {
 	}
 	signer := auth.NewRequestSigner("sa.ondc.org", "sa-key-1", saPriv, keyRegistry)
 
-	// 2. Initialize Core Engine Spine
-	memLedger := ledger.NewMemoryLedger()
-	if err := memLedger.SeedStandardAccounts(); err != nil {
-		slog.Error("Failed to seed standard accounts", "error", err)
-		os.Exit(1)
+	// 2. Initialize Core Engine Spine (PostgreSQL with graceful In-Memory fallback)
+	dbURL := os.Getenv("HISAAB_DB_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
 	}
-	_, _ = memLedger.RegisterAccount("sa:suspense", ledger.AccountAsset, "INR", false)
+
+	var eng ledger.Engine
+	var pool *pgxpool.Pool
+
+	if dbURL != "" {
+		ctxInit, cancelInit := context.WithTimeout(context.Background(), 5*time.Second)
+		p, err := pgxpool.New(ctxInit, dbURL)
+		cancelInit()
+		if err != nil {
+			slog.Warn("Failed to connect to PostgreSQL; falling back to memory ledger", "error", err)
+			mem := ledger.NewMemoryLedger()
+			_ = mem.SeedStandardAccounts()
+			_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountAsset, "INR", false)
+			_, _ = mem.RegisterAccount("sa:tolerance_adjustment", ledger.AccountAsset, "INR", false)
+			_, _ = mem.RegisterAccount("tax:gst_tcs_payable", ledger.AccountLiability, "INR", false)
+			_, _ = mem.RegisterAccount("tax:tds_payable", ledger.AccountLiability, "INR", false)
+			eng = mem
+		} else {
+			slog.Info("Connected to PostgreSQL ledger", "db_configured", true)
+			pool = p
+			pgLedger := ledger.New(pool)
+			ctxSeed, cancelSeed := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := pgLedger.SeedStandardAccounts(ctxSeed); err != nil {
+				slog.Error("Failed to seed standard accounts in PostgreSQL", "error", err)
+			}
+			_ = pgLedger.RegisterAccount(ctxSeed, "sa:suspense", ledger.AccountAsset, "INR", false)
+			_ = pgLedger.RegisterAccount(ctxSeed, "sa:tolerance_adjustment", ledger.AccountAsset, "INR", false)
+			_ = pgLedger.RegisterAccount(ctxSeed, "tax:gst_tcs_payable", ledger.AccountLiability, "INR", false)
+			_ = pgLedger.RegisterAccount(ctxSeed, "tax:tds_payable", ledger.AccountLiability, "INR", false)
+			cancelSeed()
+			eng = pgLedger
+		}
+	} else {
+		slog.Info("HISAAB_DB_URL not configured; running in-memory ledger engine")
+		mem := ledger.NewMemoryLedger()
+		_ = mem.SeedStandardAccounts()
+		_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountAsset, "INR", false)
+		_, _ = mem.RegisterAccount("sa:tolerance_adjustment", ledger.AccountAsset, "INR", false)
+		_, _ = mem.RegisterAccount("tax:gst_tcs_payable", ledger.AccountLiability, "INR", false)
+		_, _ = mem.RegisterAccount("tax:tds_payable", ledger.AccountLiability, "INR", false)
+		eng = mem
+	}
 
 	matcher := settlement.NewMatcher(settlement.DefaultPolicy())
 	cal := calendar.New(nil)
 	taxAdapter := &defaultTaxAdapter{cfg: nptoolkit.DefaultIndiaTaxConfig()}
 
-	orch := settlement.NewOrchestrator(memLedger, matcher, cal, taxAdapter, nil)
+	orch := settlement.NewOrchestrator(eng, matcher, cal, taxAdapter, nil)
+	if pool != nil {
+		orch.SetPool(pool)
+	}
 
 	// 3. HTTP Settlement Handler
 	settleHandler := settlement.NewHandler(
@@ -123,7 +185,7 @@ func main() {
 		}
 		rows := make([]BalRow, 0, len(accounts))
 		for _, acc := range accounts {
-			bal, _ := memLedger.Balance(r.Context(), acc)
+			bal, _ := eng.Balance(r.Context(), acc)
 			rows = append(rows, BalRow{Account: acc, Balance: bal})
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -144,6 +206,38 @@ func main() {
 			"count":      len(unmatched),
 			"exceptions": unmatched,
 		})
+	})
+
+	// Live scenario execution endpoint for Ops Console workbench
+	mux.HandleFunc("POST /v1/scenarios/{id}/run", func(w http.ResponseWriter, r *http.Request) {
+		scenarioID := r.PathValue("id")
+		scenarioIDLower := strings.ToLower(scenarioID)
+
+		// Locate scenario YAML file
+		scenarioPath := fmt.Sprintf("spec/scenarios/%s.yaml", scenarioIDLower)
+		if _, err := os.Stat(scenarioPath); err != nil {
+			scenarioPath = fmt.Sprintf("spec/scenarios/%s.yaml", strings.ToUpper(scenarioID))
+			if _, err2 := os.Stat(scenarioPath); err2 != nil {
+				http.Error(w, fmt.Sprintf("Scenario file %s not found", scenarioPath), http.StatusNotFound)
+				return
+			}
+		}
+
+		sc, err := scenariodsl.LoadScenarioFile(scenarioPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to load scenario %s: %v", scenarioID, err), http.StatusBadRequest)
+			return
+		}
+
+		runner := scenariodsl.NewRunner()
+		result, err := runner.Run(r.Context(), sc)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Scenario execution error: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(result)
 	})
 
 	server := &http.Server{
@@ -176,6 +270,10 @@ func main() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		if pool != nil {
+			pool.Close()
+		}
 
 		if err := server.Shutdown(ctx); err != nil {
 			slog.Error("Server forced to shutdown", "error", err)

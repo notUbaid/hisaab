@@ -137,3 +137,54 @@ func TestRecon_MakerChecker_DualControl(t *testing.T) {
 		t.Errorf("Expected approved status, got %s", proposal.Status)
 	}
 }
+
+func TestRecon_BankCreditAmountMismatch(t *testing.T) {
+	engine := recon.NewEngine(calendar.New(nil))
+	tNow := time.Date(2026, 10, 30, 12, 0, 0, 0, calendar.Location())
+
+	orderBook := []recon.OrderBookLine{
+		{NetworkOrderID: "ORD-PARTIAL-BANK", AmountPaise: 100000, CreatedAt: tNow.Add(-24 * time.Hour)},
+	}
+	saReport := []recon.SAReportLine{
+		{NetworkOrderID: "ORD-PARTIAL-BANK", SettledAmount: 100000, Status: "settled", SettledAt: tNow.Add(-12 * time.Hour)},
+	}
+	// Bank credit of ₹500 (50,000 paise) against settlement of ₹1,000 (100,000 paise)
+	bankStatement := []recon.BankStatementLine{
+		{ReferenceID: "ORD-PARTIAL-BANK", UTR: "UTR-UNDER-500", Direction: ledger.Credit, AmountPaise: 50000, ValueDate: tNow.Add(-6 * time.Hour)},
+	}
+
+	result := engine.Reconcile(orderBook, saReport, bankStatement, tNow)
+	if result.TotalExceptions != 1 {
+		t.Fatalf("Expected 1 exception for bank under-credit, got %d", result.TotalExceptions)
+	}
+	exc := result.Exceptions[0]
+	if exc.Class != recon.ExceptionAmountMismatch {
+		t.Errorf("Expected ExceptionAmountMismatch, got %s", exc.Class)
+	}
+	if exc.ExpectedPaise != 100000 || exc.ActualPaise != 50000 {
+		t.Errorf("Expected 100000 vs 50000, got %d vs %d", exc.ExpectedPaise, exc.ActualPaise)
+	}
+}
+
+func TestRecon_BankCurrencyMismatch(t *testing.T) {
+	engine := recon.NewEngine(calendar.New(nil))
+	tNow := time.Date(2026, 10, 30, 12, 0, 0, 0, calendar.Location())
+
+	orderBook := []recon.OrderBookLine{
+		{NetworkOrderID: "ORD-USD", AmountPaise: 50000, CreatedAt: tNow.Add(-24 * time.Hour)},
+	}
+	saReport := []recon.SAReportLine{
+		{NetworkOrderID: "ORD-USD", SettledAmount: 50000, Status: "settled", SettledAt: tNow.Add(-12 * time.Hour)},
+	}
+	bankStatement := []recon.BankStatementLine{
+		{ReferenceID: "ORD-USD", UTR: "UTR-USD-1", Direction: ledger.Credit, AmountPaise: 50000, Currency: "USD", ValueDate: tNow.Add(-6 * time.Hour)},
+	}
+
+	result := engine.Reconcile(orderBook, saReport, bankStatement, tNow)
+	if result.TotalExceptions != 1 {
+		t.Fatalf("Expected 1 exception for currency mismatch, got %d", result.TotalExceptions)
+	}
+	if result.Exceptions[0].Class != recon.ExceptionComponentBreak {
+		t.Errorf("Expected ExceptionComponentBreak for foreign currency, got %s", result.Exceptions[0].Class)
+	}
+}

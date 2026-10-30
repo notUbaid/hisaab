@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ubaid/hisaab/internal/audit"
 	"github.com/ubaid/hisaab/internal/calendar"
 	"github.com/ubaid/hisaab/internal/ledger"
 )
@@ -23,8 +25,23 @@ type FailpointTrigger interface {
 	Trigger(name string) error
 }
 
+// TaxBreakdown contains calculated paise withholding legs.
+type TaxBreakdown struct {
+	OrderAmountPaise ledger.AmountPaise `json:"order_amount_paise"`
+	CommissionPaise  ledger.AmountPaise `json:"commission_paise"`
+	BFFPaise         ledger.AmountPaise `json:"bff_paise"`
+	TDSPaise         ledger.AmountPaise `json:"tds_paise"`
+	GSTTCSPaise      ledger.AmountPaise `json:"gst_tcs_paise"`
+	TotalTaxPaise    ledger.AmountPaise `json:"total_tax_paise"`
+}
+
 // TaxCalculator abstracts statutory tax withholding calculations (TDS & GST TCS).
 type TaxCalculator interface {
+	CalculateOrderTax(orderAmount, commission, bff ledger.AmountPaise) (*TaxBreakdown, error)
+}
+
+// LegacyTaxCalculator provides backward compatibility for single-value tax functions.
+type LegacyTaxCalculator interface {
 	CalculateOrderTaxPaise(orderAmount, commission, bff ledger.AmountPaise) ledger.AmountPaise
 }
 
@@ -32,10 +49,15 @@ type TaxCalculator interface {
 type BatchStatus string
 
 const (
-	BatchStatusOpen      BatchStatus = "open"
-	BatchStatusMatching  BatchStatus = "matching"
-	BatchStatusSettled   BatchStatus = "settled"
-	BatchStatusException BatchStatus = "exception"
+	BatchStatusPending          BatchStatus = "PENDING"
+	BatchStatusSettled          BatchStatus = "SETTLED"
+	BatchStatusPartiallySettled BatchStatus = "PARTIALLY_SETTLED"
+	BatchStatusRejected         BatchStatus = "REJECTED"
+	BatchStatusException        BatchStatus = "EXCEPTION"
+
+	// Legacy aliases
+	BatchStatusOpen     BatchStatus = "PENDING"
+	BatchStatusMatching BatchStatus = "MATCHING"
 )
 
 // BatchSummary models the persistent status of a settlement run across an NP pair.
@@ -49,6 +71,9 @@ type BatchSummary struct {
 	TotalGrossPaise ledger.AmountPaise `json:"total_gross_paise"`
 	NetPayoutPaise  ledger.AmountPaise `json:"net_payout_paise"`
 	TotalTaxPaise   ledger.AmountPaise `json:"total_tax_paise"`
+	TDSPaise        ledger.AmountPaise `json:"tds_paise,omitempty"`
+	GSTTCSPaise     ledger.AmountPaise `json:"gst_tcs_paise,omitempty"`
+	MerkleRoot      string             `json:"merkle_root,omitempty"`
 	Instructions    []NetInstruction   `json:"instructions"`
 	MatchedOrders   []MatchedOrder     `json:"matched_orders"`
 	UnmatchedOrders []MatchedOrder     `json:"unmatched_orders"`
@@ -71,8 +96,9 @@ type Orchestrator struct {
 	ledger     ledger.Engine
 	matcher    *Matcher
 	calendar   *calendar.Calendar
-	taxCalc    TaxCalculator
+	taxCalc    any
 	failpoints FailpointTrigger
+	pool       *pgxpool.Pool
 
 	// Persistent/In-memory indices
 	claimsByID   map[string]*StoredClaimRecord             // key: message_id
@@ -87,7 +113,7 @@ func NewOrchestrator(
 	eng ledger.Engine,
 	matcher *Matcher,
 	cal *calendar.Calendar,
-	taxCalc TaxCalculator,
+	taxCalc any,
 	fp FailpointTrigger,
 ) *Orchestrator {
 	if matcher == nil {
@@ -109,6 +135,20 @@ func NewOrchestrator(
 		outboxItems:  make([]OutboxItem, 0),
 		nextOutboxID: 1,
 	}
+}
+
+// SetPool assigns a PostgreSQL pool for persistent storage of claims, batches, and outbox.
+func (o *Orchestrator) SetPool(pool *pgxpool.Pool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.pool = pool
+}
+
+// SetTaxCalculator configures the statutory tax calculation engine.
+func (o *Orchestrator) SetTaxCalculator(taxCalc any) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.taxCalc = taxCalc
 }
 
 // SubmitClaim processes an incoming claim from an NP, stores it, and if the counterpart
@@ -158,6 +198,29 @@ func (o *Orchestrator) SubmitClaim(ctx context.Context, claim *SettleClaimPayloa
 		ReceivedAt:  time.Now().UTC(),
 	}
 	o.claimsByID[msgID] = record
+
+	// Persist claim to PostgreSQL if pool is available
+	if o.pool != nil {
+		var totalAmount int64
+		for _, ord := range claim.Orders {
+			totalAmount += int64(ord.OrderAmountPaise)
+		}
+		var claimID int64
+		err := o.pool.QueryRow(ctx, `
+			INSERT INTO claims (message_id, settlement_id, np_pair_id, submitted_by, collector_acc, receiver_acc, request_hash, order_count, total_amount_paise)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (message_id) DO NOTHING
+			RETURNING id
+		`, msgID, claim.SettlementID, claim.NPPairID, claim.SubmittedBy, claim.CollectorAcc, claim.ReceiverAcc, reqHash, len(claim.Orders), totalAmount).Scan(&claimID)
+		if err == nil && claimID > 0 {
+			for _, ord := range claim.Orders {
+				_, _ = o.pool.Exec(ctx, `
+					INSERT INTO claim_lines (claim_id, network_order_id, order_amount_paise, commission_paise, bff_paise, sor_due_paise)
+					VALUES ($1, $2, $3, $4, $5, $6)
+				`, claimID, ord.NetworkOrderID, int64(ord.OrderAmountPaise), int64(ord.CommissionPaise), int64(ord.BFFPaise), int64(ord.SoRDuePaise))
+			}
+		}
+	}
 
 	// Store by NP pair
 	roleMap, ok := o.claimsByPair[pairKey]
@@ -221,40 +284,169 @@ func (o *Orchestrator) executeBatchInternal(
 		return fmt.Errorf("orchestrator: matcher error: %w", err)
 	}
 
-	// 3. Compute statutory tax withholding on matched orders
-	var totalTaxDeductions ledger.AmountPaise
+	matchedCount := len(batchResult.MatchedOrders)
+	unmatchedCount := len(batchResult.UnmatchedOrders)
+
+	// 3. State Machine Check: If insufficient balance or 0 matched orders, mark REJECTED
+	if !batchResult.BalancePassed || matchedCount == 0 {
+		now := time.Now().UTC()
+		o.batches[batchID] = &BatchSummary{
+			BatchID:         batchID,
+			NPPairID:        buyerClaim.NPPairID,
+			SettlementDate:  settleDate.Format("2006-01-02"),
+			Status:          BatchStatusRejected,
+			MatchedCount:    0,
+			UnmatchedCount:  unmatchedCount,
+			TotalGrossPaise: 0,
+			NetPayoutPaise:  0,
+			TotalTaxPaise:   0,
+			Instructions:    nil,
+			MatchedOrders:   batchResult.MatchedOrders,
+			UnmatchedOrders: batchResult.UnmatchedOrders,
+			CreatedAt:       now,
+		}
+
+		callbackPayload, _ := json.Marshal(map[string]any{
+			"batch_id":        batchID,
+			"settlement_date": settleDate.Format("2006-01-02"),
+			"status":          "REJECTED",
+			"reason":          batchResult.ErrorCode,
+			"matched_orders":  0,
+			"net_payout":      0,
+		})
+
+		o.outboxItems = append(o.outboxItems, OutboxItem{
+			ID:        o.nextOutboxID,
+			EventType: "beckn.on_settle_callback",
+			Payload:   callbackPayload,
+			Status:    "pending",
+			CreatedAt: now,
+		})
+		o.nextOutboxID++
+
+		if o.pool != nil {
+			_, _ = o.pool.Exec(ctx, `
+				INSERT INTO outbox (event_type, payload, status, next_attempt_at)
+				VALUES ('beckn.on_settle_callback', $1, 'pending', NOW())
+			`, callbackPayload)
+		}
+
+		return nil
+	}
+
+	// 4. Compute statutory tax withholding on matched orders with error propagation
 	var totalGrossMatched ledger.AmountPaise
+	var totalTDS ledger.AmountPaise
+	var totalTCS ledger.AmountPaise
 
 	for _, ord := range batchResult.MatchedOrders {
 		totalGrossMatched += ord.OrderAmountPaise
 		if o.taxCalc != nil {
-			taxPaise := o.taxCalc.CalculateOrderTaxPaise(ord.OrderAmountPaise, ord.CommissionPaise, ord.BFFPaise)
-			totalTaxDeductions += taxPaise
+			if calc, ok := o.taxCalc.(TaxCalculator); ok {
+				tb, taxErr := calc.CalculateOrderTax(ord.OrderAmountPaise, ord.CommissionPaise, ord.BFFPaise)
+				if taxErr != nil {
+					return fmt.Errorf("orchestrator: statutory tax calculation failed on order %s: %w", ord.NetworkOrderID, taxErr)
+				}
+				if tb != nil {
+					totalTDS += tb.TDSPaise
+					totalTCS += tb.GSTTCSPaise
+				}
+			} else if leg, ok := o.taxCalc.(LegacyTaxCalculator); ok {
+				tax := leg.CalculateOrderTaxPaise(ord.OrderAmountPaise, ord.CommissionPaise, ord.BFFPaise)
+				totalTDS += (tax * 10) / 60
+				totalTCS += tax - ((tax * 10) / 60)
+			}
+		}
+	}
+	totalTaxDeductions := totalTDS + totalTCS
+
+	// 5. Build Double-Entry Journal Lines with Exact Tax Deductions & Balance Conservation
+	// Find base seller payout instruction
+	var grossSellerPayout ledger.AmountPaise
+	for _, inst := range batchResult.Instructions {
+		if inst.ToAccount == receiverAcc {
+			grossSellerPayout += inst.AmountPaise
 		}
 	}
 
-	// 4. Build Double-Entry Journal Lines
-	// Debit collector account for total matched
-	// Credit receiver account for net payout
-	// Credit tax withholding accounts if applicable
-	// Credit tolerance adjustment account if residual exists
-	journalLines := make([]ledger.EntryLine, 0)
-	var totalNetInstruction ledger.AmountPaise
-	for _, inst := range batchResult.Instructions {
-		totalNetInstruction += inst.AmountPaise
-		journalLines = append(journalLines, ledger.EntryLine{
-			AccountName: inst.FromAccount,
-			Direction:   ledger.Debit,
-			AmountPaise: inst.AmountPaise,
+	if totalTaxDeductions > grossSellerPayout {
+		return fmt.Errorf("orchestrator: total statutory tax deductions (%d paise) exceed gross seller payout (%d paise)",
+			totalTaxDeductions, grossSellerPayout)
+	}
+
+	netSellerPayout := grossSellerPayout - totalTaxDeductions
+
+	// Rebuild instructions with net post-tax seller transfer and explicit tax withholding
+	finalInstructions := make([]NetInstruction, 0)
+	if netSellerPayout > 0 {
+		finalInstructions = append(finalInstructions, NetInstruction{
+			FromAccount: collectorAcc,
+			ToAccount:   receiverAcc,
+			AmountPaise: netSellerPayout,
+			BatchID:     batchID,
 		})
-		journalLines = append(journalLines, ledger.EntryLine{
-			AccountName: inst.ToAccount,
-			Direction:   ledger.Credit,
-			AmountPaise: inst.AmountPaise,
+	}
+	if totalTDS > 0 {
+		finalInstructions = append(finalInstructions, NetInstruction{
+			FromAccount: collectorAcc,
+			ToAccount:   "tax:tds_payable",
+			AmountPaise: totalTDS,
+			BatchID:     batchID,
+		})
+	}
+	if totalTCS > 0 {
+		finalInstructions = append(finalInstructions, NetInstruction{
+			FromAccount: collectorAcc,
+			ToAccount:   "tax:gst_tcs_payable",
+			AmountPaise: totalTCS,
+			BatchID:     batchID,
+		})
+	}
+	if batchResult.ToleranceResidualPaise > 0 {
+		finalInstructions = append(finalInstructions, NetInstruction{
+			FromAccount: collectorAcc,
+			ToAccount:   "sa:tolerance_adjustment",
+			AmountPaise: batchResult.ToleranceResidualPaise,
+			BatchID:     batchID,
 		})
 	}
 
-	// Add tolerance residual line if present
+	// Double-entry ledger entries
+	journalLines := make([]ledger.EntryLine, 0)
+
+	// Debit collector account for full obligations leaving the nodal account
+	journalLines = append(journalLines, ledger.EntryLine{
+		AccountName: collectorAcc,
+		Direction:   ledger.Debit,
+		AmountPaise: grossSellerPayout,
+	})
+
+	// Credit receiver operative account for net post-tax payout
+	if netSellerPayout > 0 {
+		journalLines = append(journalLines, ledger.EntryLine{
+			AccountName: receiverAcc,
+			Direction:   ledger.Credit,
+			AmountPaise: netSellerPayout,
+		})
+	}
+
+	// Credit statutory tax liability accounts
+	if totalTDS > 0 {
+		journalLines = append(journalLines, ledger.EntryLine{
+			AccountName: "tax:tds_payable",
+			Direction:   ledger.Credit,
+			AmountPaise: totalTDS,
+		})
+	}
+	if totalTCS > 0 {
+		journalLines = append(journalLines, ledger.EntryLine{
+			AccountName: "tax:gst_tcs_payable",
+			Direction:   ledger.Credit,
+			AmountPaise: totalTCS,
+		})
+	}
+
+	// Credit tolerance residual if present
 	if batchResult.ToleranceResidualPaise > 0 {
 		journalLines = append(journalLines, ledger.EntryLine{
 			AccountName: collectorAcc,
@@ -275,30 +467,143 @@ func (o *Orchestrator) executeBatchInternal(
 		}
 	}
 
-	// 5. Post to Ledger
-	if len(journalLines) > 0 {
-		postReq := ledger.PostRequest{
-			IdempotencyKey: fmt.Sprintf("batch-%s", batchID),
-			CauseType:      ledger.CauseInstruction,
-			CauseID:        1,
-			Description:    fmt.Sprintf("ONDC Settlement Batch %s", batchID),
-			Lines:          journalLines,
-			PostedAt:       time.Now().UTC(),
+	// Determine final batch status
+	var finalBatchStatus BatchStatus
+	var callbackStatus string
+	if unmatchedCount > 0 || batchResult.ErrorCode != "" {
+		finalBatchStatus = BatchStatusPartiallySettled
+		callbackStatus = "PARTIALLY_SETTLED"
+	} else {
+		finalBatchStatus = BatchStatusSettled
+		callbackStatus = "SETTLED"
+	}
+
+	now := time.Now().UTC()
+	postReq := ledger.PostRequest{
+		IdempotencyKey: fmt.Sprintf("batch-%s", batchID),
+		CauseType:      ledger.CauseInstruction,
+		CauseID:        1,
+		Description:    fmt.Sprintf("ONDC Settlement Batch %s", batchID),
+		Lines:          journalLines,
+		PostedAt:       now,
+	}
+
+	// Compute genuine RFC 6962 Merkle tree over canonical ledger entries
+	canonicalBytes := make([][]byte, 0, len(journalLines))
+	for _, l := range journalLines {
+		canonicalBytes = append(canonicalBytes, audit.CanonicalEntryBytes(1, l))
+	}
+	var merkleRoot string
+	if tree, mErr := audit.BuildMerkleTree(canonicalBytes); mErr == nil && tree != nil {
+		merkleRoot = tree.RootHex
+	}
+
+	// 6. Atomic Persistence to PostgreSQL or In-Memory
+	if o.pool != nil {
+		tx, txErr := o.pool.Begin(ctx)
+		if txErr != nil {
+			return fmt.Errorf("orchestrator: begin postgres tx failed: %w", txErr)
 		}
-		if _, err := o.ledger.Post(ctx, postReq); err != nil {
-			return fmt.Errorf("orchestrator: ledger post failed: %w", err)
+		defer func() {
+			_ = tx.Rollback(ctx)
+		}()
+
+		var runID int64
+		if err := tx.QueryRow(ctx, "INSERT INTO batch_runs DEFAULT VALUES RETURNING run_id").Scan(&runID); err != nil {
+			return fmt.Errorf("orchestrator: create batch_run failed: %w", err)
+		}
+
+		// Rebuild canonical bytes with actual runID
+		canonicalBytesRun := make([][]byte, 0, len(journalLines))
+		for _, l := range journalLines {
+			canonicalBytesRun = append(canonicalBytesRun, audit.CanonicalEntryBytes(runID, l))
+		}
+		if tree, mErr := audit.BuildMerkleTree(canonicalBytesRun); mErr == nil && tree != nil {
+			merkleRoot = tree.RootHex
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO batch_roots (batch_id, root_hash, leaf_count, algorithm)
+				VALUES ($1, $2, $3, 'sha256')
+				ON CONFLICT (batch_id) DO UPDATE SET root_hash = EXCLUDED.root_hash
+			`, batchID, merkleRoot, len(canonicalBytesRun))
+		}
+
+		settleDateOnly, _ := time.Parse("2006-01-02", settleDate.Format("2006-01-02"))
+		_, err = tx.Exec(ctx, `
+			INSERT INTO settlement_batches (batch_id, np_pair_id, settlement_date, status, matched_count, unmatched_count, total_gross_paise, net_payout_paise, total_tax_paise, run_id, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, batchID, buyerClaim.NPPairID, settleDateOnly, string(finalBatchStatus), matchedCount, unmatchedCount,
+			int64(totalGrossMatched), int64(netSellerPayout), int64(totalTaxDeductions), runID, now)
+		if err != nil {
+			return fmt.Errorf("orchestrator: insert settlement_batches failed: %w", err)
+		}
+
+		// Post double-entry lines atomically inside this transaction
+		if pgLedger, ok := o.ledger.(*ledger.Ledger); ok {
+			if _, err := pgLedger.PostTx(ctx, tx, postReq); err != nil {
+				return fmt.Errorf("orchestrator: postgres PostTx failed: %w", err)
+			}
+		} else {
+			if _, err := o.ledger.Post(ctx, postReq); err != nil {
+				return fmt.Errorf("orchestrator: ledger post failed: %w", err)
+			}
+		}
+
+		// Persist instructions
+		for _, inst := range finalInstructions {
+			_, err = tx.Exec(ctx, `
+				INSERT INTO instructions (batch_id, from_account, to_account, amount_paise, currency, status, created_at)
+				VALUES ($1, $2, $3, $4, 'INR', 'pending', $5)
+			`, batchID, inst.FromAccount, inst.ToAccount, int64(inst.AmountPaise), now)
+			if err != nil {
+				return fmt.Errorf("orchestrator: insert instruction failed: %w", err)
+			}
+		}
+
+		// Persist outbox events
+		for _, inst := range finalInstructions {
+			instPayload, _ := json.Marshal(inst)
+			_, _ = tx.Exec(ctx, `
+				INSERT INTO outbox (event_type, payload, status, next_attempt_at)
+				VALUES ('settlement.bank_instruction', $1, 'pending', NOW())
+			`, instPayload)
+		}
+
+		callbackPayload, _ := json.Marshal(map[string]any{
+			"batch_id":        batchID,
+			"settlement_date": settleDate.Format("2006-01-02"),
+			"status":          callbackStatus,
+			"matched_orders":  matchedCount,
+			"unmatched":       unmatchedCount,
+			"net_payout":      netSellerPayout,
+			"total_tax":       totalTaxDeductions,
+			"merkle_root":     merkleRoot,
+		})
+		_, _ = tx.Exec(ctx, `
+			INSERT INTO outbox (event_type, payload, status, next_attempt_at)
+			VALUES ('beckn.on_settle_callback', $1, 'pending', NOW())
+		`, callbackPayload)
+
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("orchestrator: commit settlement transaction failed: %w", err)
+		}
+	} else {
+		// In-Memory Posting
+		if len(journalLines) > 0 {
+			if _, err := o.ledger.Post(ctx, postReq); err != nil {
+				return fmt.Errorf("orchestrator: ledger post failed: %w", err)
+			}
 		}
 	}
 
-	// 6. Stage Outbox Events
-	for _, inst := range batchResult.Instructions {
+	// 7. Update in-memory outbox and summaries
+	for _, inst := range finalInstructions {
 		instPayload, _ := json.Marshal(inst)
 		o.outboxItems = append(o.outboxItems, OutboxItem{
 			ID:        o.nextOutboxID,
 			EventType: "settlement.bank_instruction",
 			Payload:   instPayload,
 			Status:    "pending",
-			CreatedAt: time.Now().UTC(),
+			CreatedAt: now,
 		})
 		o.nextOutboxID++
 	}
@@ -306,32 +611,36 @@ func (o *Orchestrator) executeBatchInternal(
 	callbackPayload, _ := json.Marshal(map[string]any{
 		"batch_id":        batchID,
 		"settlement_date": settleDate.Format("2006-01-02"),
-		"status":          "SETTLED",
-		"matched_orders":  len(batchResult.MatchedOrders),
-		"net_payout":      totalNetInstruction,
+		"status":          callbackStatus,
+		"matched_orders":  matchedCount,
+		"unmatched":       unmatchedCount,
+		"net_payout":      netSellerPayout,
+		"total_tax":       totalTaxDeductions,
+		"merkle_root":     merkleRoot,
 	})
 	o.outboxItems = append(o.outboxItems, OutboxItem{
 		ID:        o.nextOutboxID,
 		EventType: "beckn.on_settle_callback",
 		Payload:   callbackPayload,
 		Status:    "pending",
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now,
 	})
 	o.nextOutboxID++
 
-	// 7. Store Batch Summary
-	now := time.Now().UTC()
 	o.batches[batchID] = &BatchSummary{
 		BatchID:         batchID,
 		NPPairID:        buyerClaim.NPPairID,
 		SettlementDate:  settleDate.Format("2006-01-02"),
-		Status:          BatchStatusSettled,
-		MatchedCount:    len(batchResult.MatchedOrders),
-		UnmatchedCount:  len(batchResult.UnmatchedOrders),
+		Status:          finalBatchStatus,
+		MatchedCount:    matchedCount,
+		UnmatchedCount:  unmatchedCount,
 		TotalGrossPaise: totalGrossMatched,
-		NetPayoutPaise:  totalNetInstruction,
+		NetPayoutPaise:  netSellerPayout,
 		TotalTaxPaise:   totalTaxDeductions,
-		Instructions:    batchResult.Instructions,
+		TDSPaise:        totalTDS,
+		GSTTCSPaise:     totalTCS,
+		MerkleRoot:      merkleRoot,
+		Instructions:    finalInstructions,
 		MatchedOrders:   batchResult.MatchedOrders,
 		UnmatchedOrders: batchResult.UnmatchedOrders,
 		SettledAt:       &now,

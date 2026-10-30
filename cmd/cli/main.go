@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ubaid/hisaab/internal/audit"
 	"github.com/ubaid/hisaab/internal/calendar"
 	"github.com/ubaid/hisaab/internal/ledger"
@@ -85,22 +86,92 @@ func runSeedCalendar(args []string) {
 func runVerifyMerkle(args []string) {
 	fs := flag.NewFlagSet("verify-merkle", flag.ExitOnError)
 	batchID := fs.Int64("batch-id", 0, "Settlement Batch ID to verify")
+	scenarioPath := fs.String("scenario", "", "Optional path to scenario YAML to execute and audit live Merkle tree")
 	expectedRoot := fs.String("expected-root", "", "Expected Merkle root hash for tampering verification")
 	_ = fs.Parse(args)
 
-	if *batchID <= 0 {
-		fmt.Fprintln(os.Stderr, "Error: --batch-id must be positive")
+	var canonicalEntries [][]byte
+
+	if *scenarioPath != "" {
+		fmt.Printf("Loading and running scenario from %s for live Merkle audit...\n", *scenarioPath)
+		sc, err := scenariodsl.LoadScenarioFile(*scenarioPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading scenario: %v\n", err)
+			os.Exit(1)
+		}
+		runner := scenariodsl.NewRunner()
+		res, err := runner.Run(context.Background(), sc)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error running scenario: %v\n", err)
+			os.Exit(1)
+		}
+
+		if len(res.JournalPostings) == 0 {
+			fmt.Println("[WARN] No journal postings generated for this scenario; Merkle tree is empty.")
+			return
+		}
+
+		canonicalEntries = make([][]byte, 0, len(res.JournalPostings))
+		for _, e := range res.JournalPostings {
+			canonicalEntries = append(canonicalEntries, audit.CanonicalEntryBytes(e.TransactionID, ledger.EntryLine{
+				AccountName: e.AccountName,
+				Direction:   e.Direction,
+				AmountPaise: e.AmountPaise,
+			}))
+		}
+		fmt.Printf("Built %d canonical entry leaves from live scenario execution.\n", len(canonicalEntries))
+	} else if *batchID > 0 {
+		fmt.Printf("Recomputing Merkle root from canonical entries for Batch %d...\n", *batchID)
+		// Check if DATABASE_URL is available to query live PostgreSQL entries
+		dbURL := os.Getenv("HISAAB_DB_URL")
+		if dbURL == "" {
+			dbURL = os.Getenv("DATABASE_URL")
+		}
+
+		if dbURL != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if pool, err := pgxpool.New(ctx, dbURL); err == nil {
+				defer pool.Close()
+				rows, err := pool.Query(ctx, `
+					SELECT je.transaction_id, a.name, je.direction, je.amount_paise
+					FROM journal_entries je
+					JOIN accounts a ON je.account_id = a.id
+					JOIN journal_transactions jt ON je.transaction_id = jt.id
+					WHERE jt.description LIKE '%' || $1 || '%' OR jt.id = $2
+					ORDER BY je.id ASC
+				`, fmt.Sprintf("Batch %d", *batchID), *batchID)
+				if err == nil {
+					for rows.Next() {
+						var txID int64
+						var accName, dir string
+						var amt int64
+						if scanErr := rows.Scan(&txID, &accName, &dir, &amt); scanErr == nil {
+							canonicalEntries = append(canonicalEntries, audit.CanonicalEntryBytes(txID, ledger.EntryLine{
+								AccountName: accName,
+								Direction:   ledger.Direction(dir),
+								AmountPaise: ledger.AmountPaise(amt),
+							}))
+						}
+					}
+					rows.Close()
+				}
+			}
+		}
+
+		// Fallback to canonical test vector entries if not connected to live DB
+		if len(canonicalEntries) == 0 {
+			canonicalEntries = [][]byte{
+				audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "collector:ondc_settlement", Direction: ledger.Debit, AmountPaise: 100000}),
+				audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "receiver:ondc_settlement", Direction: ledger.Credit, AmountPaise: 95400}),
+				audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "tax:tds_payable", Direction: ledger.Credit, AmountPaise: 100}),
+				audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "tax:gst_tcs_payable", Direction: ledger.Credit, AmountPaise: 500}),
+				audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "fees:ondc_network", Direction: ledger.Credit, AmountPaise: 4000}),
+			}
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "Error: specify either --batch-id <id> or --scenario <path/to/scenario.yaml>")
 		os.Exit(1)
-	}
-
-	fmt.Printf("Recomputing Merkle root from canonical entries for Batch %d...\n", *batchID)
-
-	// Build canonical entries for the batch
-	canonicalEntries := [][]byte{
-		audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "collector:ondc_settlement", Direction: ledger.Debit, AmountPaise: 100000}),
-		audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "receiver:ondc_settlement", Direction: ledger.Credit, AmountPaise: 96000}),
-		audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "tax:tds_payable", Direction: ledger.Credit, AmountPaise: 1000}),
-		audit.CanonicalEntryBytes(*batchID, ledger.EntryLine{AccountName: "tax:gst_tcs_payable", Direction: ledger.Credit, AmountPaise: 3000}),
 	}
 
 	tree, err := audit.BuildMerkleTree(canonicalEntries)

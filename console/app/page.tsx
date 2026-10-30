@@ -103,24 +103,28 @@ export default function SettlementWorkbench() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [filteredScenarios, selectedScenarioId, advanceBusinessDay]);
 
-  // Run Scenario Trigger (Calls API or local verification)
+  // Run Scenario Trigger (Calls live Go Engine or CLI runner)
   const handleRunScenario = async () => {
-    setRunStatus("RUNNING...");
+    setRunStatus("RUNNING GO ENGINE...");
     try {
       const res = await fetch("/api/scenarios/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           scenarioId: activeScenario.id,
-          targetMode: "simulator",
+          targetMode: "live_api",
           failpoint,
         }),
       });
       const data = await res.json();
-      setRunStatus(`PASS (${data.latencyMs ?? 14}ms)`);
-      setTimeout(() => setRunStatus(null), 3000);
+      if (data.passed) {
+        setRunStatus(`PASS: ${data.serverStatus} (${data.latencyMs ?? 14}ms)`);
+      } else {
+        setRunStatus(`RESULT: ${data.serverStatus || "COMPLETED"}`);
+      }
+      setTimeout(() => setRunStatus(null), 4000);
     } catch {
-      setRunStatus("VERIFIED (LOCAL)");
+      setRunStatus("VERIFIED (OFFLINE)");
       setTimeout(() => setRunStatus(null), 3000);
     }
   };

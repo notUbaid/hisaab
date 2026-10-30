@@ -54,6 +54,7 @@ type BankStatementLine struct {
 	UTR         string             `json:"utr"`
 	Direction   ledger.Direction   `json:"direction"`
 	AmountPaise ledger.AmountPaise `json:"amount_paise"`
+	Currency    string             `json:"currency,omitempty"`
 	ValueDate   time.Time          `json:"value_date"`
 }
 

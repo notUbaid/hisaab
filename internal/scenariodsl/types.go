@@ -70,6 +70,7 @@ type ScenarioResult struct {
 	InitialBalance     ledger.AmountPaise                `json:"initial_balance"`
 	FinalBalance       ledger.AmountPaise                `json:"final_balance"`
 	NetPayoutPaise     ledger.AmountPaise                `json:"net_payout_paise"`
+	MerkleRoot         string                            `json:"merkle_root,omitempty"`
 	JournalPostings    []ledger.JournalEntry             `json:"journal_postings"`
 	InvariantsVerified []string                          `json:"invariants_verified"`
 	AuditLog           []string                          `json:"audit_log"`

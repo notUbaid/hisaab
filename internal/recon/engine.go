@@ -213,7 +213,84 @@ func (e *Engine) Reconcile(
 			result.Exceptions = append(result.Exceptions, exc)
 			result.ExceptionsByClass[ExceptionBankFailure]++
 		} else {
-			_ = bLine
+			ageing := e.calculateBusinessDaysBetween(sa.SettledAt, asOf)
+
+			// 1. Verify Currency (ONDC settlement strictly requires INR)
+			curr := bLine.Currency
+			if curr != "" && curr != "INR" {
+				exc := ReconException{
+					ID:             generateID("EXC-BANK-CURRENCY"),
+					Class:          ExceptionComponentBreak,
+					NetworkOrderID: sa.NetworkOrderID,
+					ExpectedPaise:  sa.SettledAmount,
+					ActualPaise:    bLine.AmountPaise,
+					AgeingDays:     ageing,
+					Status:         ReconStatusOpen,
+					Details:        fmt.Sprintf("Order %s bank currency mismatch: expected INR, got %s (UTR %s)", sa.NetworkOrderID, curr, bLine.UTR),
+					DetectedAt:     asOf,
+				}
+				result.Exceptions = append(result.Exceptions, exc)
+				result.ExceptionsByClass[ExceptionComponentBreak]++
+				continue
+			}
+
+			// 2. Verify Amount (exact paise parity between SA advice and bank credit)
+			if bLine.AmountPaise != sa.SettledAmount {
+				exc := ReconException{
+					ID:             generateID("EXC-BANK-AMOUNT"),
+					Class:          ExceptionAmountMismatch,
+					NetworkOrderID: sa.NetworkOrderID,
+					ExpectedPaise:  sa.SettledAmount,
+					ActualPaise:    bLine.AmountPaise,
+					AgeingDays:     ageing,
+					Status:         ReconStatusOpen,
+					Details: fmt.Sprintf("Order %s bank statement amount mismatch: SA settled %d paise vs Bank credited %d paise (UTR %s)",
+						sa.NetworkOrderID, sa.SettledAmount, bLine.AmountPaise, bLine.UTR),
+					DetectedAt: asOf,
+				}
+				result.Exceptions = append(result.Exceptions, exc)
+				result.ExceptionsByClass[ExceptionAmountMismatch]++
+				continue
+			}
+
+			// 3. Verify Value Date (Timing / Delayed Credit)
+			if bLine.ValueDate.Before(sa.SettledAt.Truncate(24 * time.Hour)) {
+				exc := ReconException{
+					ID:             generateID("EXC-BANK-TIMING"),
+					Class:          ExceptionTimingBreak,
+					NetworkOrderID: sa.NetworkOrderID,
+					ExpectedPaise:  sa.SettledAmount,
+					ActualPaise:    bLine.AmountPaise,
+					AgeingDays:     ageing,
+					Status:         ReconStatusOpen,
+					Details: fmt.Sprintf("Order %s bank credit value date (%s) precedes SA settlement date (%s)",
+						sa.NetworkOrderID, bLine.ValueDate.Format("2006-01-02"), sa.SettledAt.Format("2006-01-02")),
+					DetectedAt: asOf,
+				}
+				result.Exceptions = append(result.Exceptions, exc)
+				result.ExceptionsByClass[ExceptionTimingBreak]++
+				continue
+			}
+
+			// 4. Check for excessive bank clearing delay (> 2 business days)
+			delayDays := e.calculateBusinessDaysBetween(sa.SettledAt, bLine.ValueDate)
+			if delayDays > 2 {
+				exc := ReconException{
+					ID:             generateID("EXC-BANK-DELAY"),
+					Class:          ExceptionTimingBreak,
+					NetworkOrderID: sa.NetworkOrderID,
+					ExpectedPaise:  sa.SettledAmount,
+					ActualPaise:    bLine.AmountPaise,
+					AgeingDays:     delayDays,
+					Status:         ReconStatusOpen,
+					Details: fmt.Sprintf("Order %s bank credit delayed by %d business days beyond settlement date",
+						sa.NetworkOrderID, delayDays),
+					DetectedAt: asOf,
+				}
+				result.Exceptions = append(result.Exceptions, exc)
+				result.ExceptionsByClass[ExceptionTimingBreak]++
+				continue
+			}
 		}
 	}
 

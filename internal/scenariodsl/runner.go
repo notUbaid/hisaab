@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/ubaid/hisaab/internal/audit"
 	"github.com/ubaid/hisaab/internal/calendar"
 	"github.com/ubaid/hisaab/internal/ledger"
 	"github.com/ubaid/hisaab/internal/nptoolkit"
@@ -344,6 +345,22 @@ func (r *Runner) Run(ctx context.Context, sc *ScenarioDef) (*ScenarioResult, err
 
 	auditLog = append(auditLog, fmt.Sprintf("[SUCCESS] Scenario %s completed successfully with 100%% invariant conformance", sc.ID))
 
+	entries := mem.GetEntries()
+	var merkleRoot string
+	if len(entries) > 0 {
+		cBytes := make([][]byte, 0, len(entries))
+		for _, e := range entries {
+			cBytes = append(cBytes, audit.CanonicalEntryBytes(e.TransactionID, ledger.EntryLine{
+				AccountName: e.AccountName,
+				Direction:   e.Direction,
+				AmountPaise: e.AmountPaise,
+			}))
+		}
+		if tree, err := audit.BuildMerkleTree(cBytes); err == nil && tree != nil {
+			merkleRoot = tree.RootHex
+		}
+	}
+
 	return &ScenarioResult{
 		ScenarioID:         sc.ID,
 		Title:              sc.Title,
@@ -353,7 +370,8 @@ func (r *Runner) Run(ctx context.Context, sc *ScenarioDef) (*ScenarioResult, err
 		InitialBalance:     initialBalance,
 		FinalBalance:       finalBalance,
 		NetPayoutPaise:     netPayout,
-		JournalPostings:    mem.GetEntries(),
+		MerkleRoot:         merkleRoot,
+		JournalPostings:    entries,
 		InvariantsVerified: invariantsVerified,
 		AuditLog:           auditLog,
 	}, nil
