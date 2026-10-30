@@ -8,6 +8,7 @@ import (
 
 	"github.com/ubaid/hisaab/internal/calendar"
 	"github.com/ubaid/hisaab/internal/ledger"
+	"github.com/ubaid/hisaab/internal/nptoolkit"
 	"github.com/ubaid/hisaab/internal/settlement"
 	"github.com/ubaid/hisaab/internal/verification"
 	"gopkg.in/yaml.v3"
@@ -126,6 +127,12 @@ func (r *Runner) Run(ctx context.Context, sc *ScenarioDef) (*ScenarioResult, err
 			ReceiverAcc:  "receiver:ondc_settlement",
 			Orders:       mapOrderDefs(sc.Given.BuyerClaim.Orders, settlementDate),
 		}
+		if sc.Given.BuyerClaim.MessageID != "" {
+			buyerClaim.Context = &settlement.BecknContext{
+				Action:    "settle",
+				MessageID: sc.Given.BuyerClaim.MessageID,
+			}
+		}
 		auditLog = append(auditLog, fmt.Sprintf("[CLAIM] Buyer Claim parsed: %d orders (MsgID: %s)",
 			len(buyerClaim.Orders), sc.Given.BuyerClaim.MessageID))
 	}
@@ -139,11 +146,68 @@ func (r *Runner) Run(ctx context.Context, sc *ScenarioDef) (*ScenarioResult, err
 			ReceiverAcc:  "receiver:ondc_settlement",
 			Orders:       mapOrderDefs(sc.Given.SellerClaim.Orders, settlementDate),
 		}
+		if sc.Given.SellerClaim.MessageID != "" {
+			sellerClaim.Context = &settlement.BecknContext{
+				Action:    "settle",
+				MessageID: sc.Given.SellerClaim.MessageID,
+			}
+		}
 		auditLog = append(auditLog, fmt.Sprintf("[CLAIM] Seller Claim parsed: %d orders (MsgID: %s)",
 			len(sellerClaim.Orders), sc.Given.SellerClaim.MessageID))
 	}
 
 	invariantsVerified := make([]string, 0)
+
+	// Pre-flight claim validation check (for schema errors & duplicate order rejections)
+	validator := nptoolkit.NewPreFlightValidator()
+	var valErr error
+	if buyerClaim != nil {
+		if err := settlement.ValidateClaimPayload(buyerClaim); err != nil {
+			valErr = err
+		} else {
+			report := validator.Validate(buyerClaim)
+			if !report.IsValid && len(report.Issues) > 0 {
+				valErr = fmt.Errorf("schema validation failure: %s (%s)", report.Issues[0].Code, report.Issues[0].Message)
+			}
+		}
+	}
+	if valErr == nil && sellerClaim != nil {
+		if err := settlement.ValidateClaimPayload(sellerClaim); err != nil {
+			valErr = err
+		} else {
+			report := validator.Validate(sellerClaim)
+			if !report.IsValid && len(report.Issues) > 0 {
+				valErr = fmt.Errorf("schema validation failure: %s (%s)", report.Issues[0].Code, report.Issues[0].Message)
+			}
+		}
+	}
+
+	if valErr != nil {
+		auditLog = append(auditLog, fmt.Sprintf("[VALIDATION_ERR] Claim rejected synchronously: %v", valErr))
+		if sc.Then.ErrorCode != "" {
+			auditLog = append(auditLog, fmt.Sprintf("[EXPECTED_ERR] Expected error code: %s", sc.Then.ErrorCode))
+			if err := mem.AuditInvariants(); err != nil {
+				return nil, fmt.Errorf("scenariodsl: ledger invariant audit failed: %w", err)
+			}
+			invariantsVerified = append(invariantsVerified, "Invariant 1: Global Zero-Sum Debits == Credits")
+			invariantsVerified = append(invariantsVerified, "Invariant 4: Constrained Account Non-Negative Balance")
+			auditLog = append(auditLog, fmt.Sprintf("[SUCCESS] Scenario %s completed with expected rejection", sc.ID))
+			return &ScenarioResult{
+				ScenarioID:         sc.ID,
+				Title:              sc.Title,
+				Passed:             true,
+				ExecutedAt:         time.Now().UTC(),
+				InitialBalance:     initialBalance,
+				FinalBalance:       initialBalance,
+				NetPayoutPaise:     0,
+				JournalPostings:    []ledger.JournalEntry{},
+				InvariantsVerified: invariantsVerified,
+				AuditLog:           auditLog,
+				ErrorMessage:       valErr.Error(),
+			}, nil
+		}
+		return nil, fmt.Errorf("scenariodsl: unexpected claim validation error: %w", valErr)
+	}
 
 	// 5. Execute Matching & Verification
 	batchID := fmt.Sprintf("BATCH-%s", sc.ID)

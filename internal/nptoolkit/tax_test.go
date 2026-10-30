@@ -105,3 +105,19 @@ func TestGenerateTaxJournalLines_Balanced(t *testing.T) {
 		t.Fatalf("expected total %d, got %d", tb.TotalTaxPaise, total)
 	}
 }
+
+func TestRoundHalfEven(t *testing.T) {
+	// Half rounds to even (Banker's rounding)
+	if nptoolkit.RoundHalfEven(75000, 10000) != 8 { // 7.5 -> 8 (odd to even)
+		t.Errorf("Expected 75000/10000 to round to 8, got %d", nptoolkit.RoundHalfEven(75000, 10000))
+	}
+	if nptoolkit.RoundHalfEven(65000, 10000) != 6 { // 6.5 -> 6 (even stays even)
+		t.Errorf("Expected 65000/10000 to round to 6, got %d", nptoolkit.RoundHalfEven(65000, 10000))
+	}
+	if nptoolkit.RoundHalfEven(74000, 10000) != 7 { // 7.4 -> 7
+		t.Errorf("Expected 74000/10000 to round to 7, got %d", nptoolkit.RoundHalfEven(74000, 10000))
+	}
+	if nptoolkit.RoundHalfEven(76000, 10000) != 8 { // 7.6 -> 8
+		t.Errorf("Expected 76000/10000 to round to 8, got %d", nptoolkit.RoundHalfEven(76000, 10000))
+	}
+}

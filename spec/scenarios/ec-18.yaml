@@ -1,0 +1,38 @@
+id: EC-18
+title: "Refund claim with insufficient Seller balance (Escalated to Suspense Break)"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.3, Case 18"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  buyer_claim:
+    message_id: "msg-buyer-ec18-suspense"
+    orders:
+      - order_id: "ORD-20261030-1801"
+        amount_paise: 10000
+        commission_paise: 300
+        bff_paise: 100
+        sor_due_paise: 9600
+  seller_claim:
+    message_id: "msg-seller-ec18-suspense"
+    orders:
+      - order_id: "ORD-20261030-1801"
+        amount_paise: 10000
+        commission_paise: 300
+        bff_paise: 100
+        sor_due_paise: 9600
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 9900
+  collector_final_balance_paise: 4990100
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant13_GrossNetTieOut

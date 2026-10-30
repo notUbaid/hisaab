@@ -1,0 +1,31 @@
+id: EC-10
+title: "Counterpart arrives after carry-forward expiration (Expired Unmatched)"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 10"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-11-05"
+  policy_flags:
+    carry_forward_days: 2
+  buyer_claim:
+    message_id: "msg-buyer-ec10-late"
+    orders:
+      - order_id: "ORD-20261030-1001"
+        amount_paise: 150000
+        commission_paise: 4500
+        bff_paise: 1500
+  seller_claim: null # Seller did not arrive within 2 business days
+
+then:
+  match_status: "UNMATCHED"
+  error_code: "CARRY_FORWARD_EXPIRED"
+  matched_orders_count: 0
+  unmatched_orders_count: 1
+  net_payout_paise: 0
+  collector_final_balance_paise: 5000000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance

@@ -1,23 +1,23 @@
 # Hisaab (हिसाब) — Architectural Specification
 
-**Document Version:** 1.0.0  
-**Specification:** ONDC RSF 2.0 / NTS10 2.0.0  
-**Architecture Style:** Modular Monolith with Event-Driven Outbox  
-**Primary Engine:** Go 1.23.2 | **Ops Console:** Next.js 15 App Router | **Database:** PostgreSQL 16  
+**Document Version:** 2.0.0  
+**Specification:** ONDC RSF 2.0 / NTS10 2.0.0 (Reconciliation & Settlement Framework)  
+**Architecture Style:** Modular Monolith with Event-Driven Transactional Outbox  
+**Primary Engine:** Go 1.23+ | **Operator Workbench:** Next.js 15 App Router | **Database:** PostgreSQL 16  
 
 ---
 
 ## 1. System Overview
 
-Hisaab is architected as a high-throughput, low-latency financial state machine and simulation engine designed specifically for decentralized multi-party commerce on ONDC.
+Hisaab is a deterministic reconciliation, statutory tax calculation, and double-entry settlement engine engineered for multi-party decentralized commerce on the **Open Network for Digital Commerce (ONDC)**.
 
-Unlike traditional platforms where a single monolithic database manages payments and payouts, ONDC unbundles the transaction lifecycle across independent legal entities:
-- **Buyer App (BAP)**: Collects money from the end-consumer into an escrow account.
-- **Seller App (BPP)**: Disburses payouts to the Seller on Record (SoR) and deducts platform commissions.
-- **Logistics Service Provider (LSP)**: Delivers goods and claims separate freight fees.
-- **Settlement Agency (SA)**: Reconciles claims order-by-order, computes multilateral net transfers, and executes RBI-regulated bank payouts.
+Unlike centralized e-commerce platforms (e.g., Amazon, Flipkart) where a single platform ledger debits consumer payment instruments, deducts platform commissions, and disburses seller payouts, ONDC unbundles the transaction lifecycle across independent legal entities:
+- **Buyer App (BAP)**: Collects funds from consumers into a nodal/escrow pool.
+- **Seller App (BPP)**: Disburses payouts to the merchant / Seller on Record (SoR) and retains network commissions.
+- **Logistics Service Provider (LSP)**: Transports goods and claims freight fees.
+- **Settlement Agency (SA) / RSP**: Reconciles order claims across counterparties, calculates statutory withholding (TDS/TCS), produces multilateral net bank instructions, and anchors an append-only audit trail.
 
-Hisaab provides the executable reference implementation of the Settlement Agency (SA) and Network Participant (NP) toolkits.
+Hisaab provides the reference implementation for both the Settlement Agency (SA) and Network Participant (NP) toolkits.
 
 ---
 
@@ -28,102 +28,159 @@ Hisaab provides the executable reference implementation of the Settlement Agency
 |                                   HISAAB CORE                                     |
 +-----------------------------------------------------------------------------------+
 |                                                                                   |
-|  [ Beckn Transport ]                                                              |
-|    cmd/api: HTTP POST /settle and /on_settle (Ed25519 Auth & SHA-256 Digest)      |
+|  [ Beckn Transport & Cryptography ]                                               |
+|    internal/auth:       Ed25519 & BLAKE2b-512 Signature & Digest (ONDC standard)   |
+|    internal/audit:      RFC 6962 Domain-Separated Merkle Tree & Batch Roots       |
+|    cmd/api:             Beckn HTTP Handlers (/settle, /on_settle, /readyz)        |
 |                                                                                   |
 |  [ Domain Engines ]                                                               |
-|    internal/settlement: Two-Level Netting Matcher (O(K log K))                    |
-|    internal/settlement: Bidirectional Refund Engine (Balance Gate & Suspense)    |
-|    internal/nptoolkit:  Statutory Tax Engine (Section 194-O TDS & Section 52 TCS) |
-|    internal/nptoolkit:  NP Claim Builder & Logistics Separator (EC-06)            |
-|    internal/recon:      Three-Way Recon (Claims vs Advice vs Bank UTR)            |
-|    internal/recon:      Maker-Checker Dual Control Resolution Workflow            |
+|    internal/settlement: Two-Level Netting Matcher (Component Parity & Tolerance)  |
+|    internal/settlement: Bidirectional Refund Engine (Authoritative Caps)          |
+|    internal/settlement: Orchestrator (Atomic Claim-to-Outbox Pipeline)            |
+|    internal/nptoolkit:  Statutory Tax Engine (Section 393(1) TDS & Section 52 TCS)|
+|    internal/nptoolkit:  NP Claim Builder & Logistics Separation (EC-06)           |
+|    internal/recon:      Three-Way Recon Matcher (Claims vs Advice vs Bank UTR)    |
+|    internal/calendar:   RBI Banking Calendar, IST Cutoff & T+N Window Resolver    |
 |                                                                                   |
 |  [ Ledger & Accounting Core ]                                                     |
-|    internal/ledger:     PostgreSQL Append-Only Double-Entry Ledger                |
-|    internal/ledger:     Thread-Safe In-Memory Ledger Engine                       |
-|    internal/ledger:     Ascending Account Lock Graph (Deadlock-Free)              |
-|    internal/ledger:     Insert-First Idempotency Guard                            |
+|    internal/ledger:     PostgreSQL Append-Only Double-Entry Engine                |
+|    internal/ledger:     Thread-Safe In-Memory Ledger (Unified Engine Interface)   |
+|    internal/ledger:     Deadlock-Free Ascending Lock Graph (Inv-2)                |
+|    internal/ledger:     Atomic Inside-Tx Idempotency Keys (Inv-3)                 |
+|    internal/ledger:     Lock-Free Non-Negative Account Balance Constraints (Inv-4)|
 |                                                                                   |
-|  [ Verification & Safety ]                                                        |
-|    internal/verification: 15 Formal Invariant Auditing Engine                     |
-|    internal/verification: 8 Crash Failpoints Simulation Boundaries               |
-|    internal/verification: SHA-256 Merkle Tree Batch Root Calculator              |
-|    internal/calendar:     RBI Banking Calendar & IST Cut-off Calculator           |
-|                                                                                   |
-|  [ Infrastructure & Dispatch ]                                                    |
-|    cmd/worker: Transactional Outbox Worker (SKIP LOCKED Polling)                  |
-|    cmd/cli:    Operational CLI Subcommands                                        |
+|  [ Worker & CLI Tooling ]                                                         |
+|    cmd/worker:          Transactional Outbox Worker (SKIP LOCKED, Lease, DLQ)     |
+|    cmd/cli:             Operational CLI (Scenario Runner, Merkle Verifier)        |
+|    console/             Next.js 15 Unified High-Density Operator Workbench        |
 +-----------------------------------------------------------------------------------+
 ```
 
 ---
 
-## 3. Core Domain Design Patterns
+## 3. Financial Invariants
 
-### 3.1. Integer Paise Precision Only (Zero-Float Guarantee)
-All financial quantities in Hisaab are typed as `ledger.AmountPaise` (`int64`).
-- ₹1.00 is represented strictly as `100` paise.
-- ₹10,000.50 is represented strictly as `1000050` paise.
-- **Zero IEEE-754 floating-point types (`float32`, `float64`) are permitted in any monetary code path.** This prevents rounding evaporation and ensures exact mathematical conservation across splits.
+Hisaab enforces 15 formal mathematical invariants across transactions, batches, and settlement cycles:
 
-### 3.2. Deadlock-Free Ascending Lock Graph (Invariant 2)
-When multi-leg double-entry transactions touch multiple accounts concurrently across goroutines, naive locking causes circular lock contention (deadlocks).
-Hisaab computes a deterministic partial order over account identifiers:
-$$\forall i < j : \text{AccountID}_i < \text{AccountID}_j$$
-Accounts are always acquired in strictly ascending order and released in reverse order, guaranteeing cycle-free execution.
-
-### 3.3. Insert-First Idempotency (Invariant 3)
-To prevent duplicate execution during network retries:
-1. Every settlement request includes an `IdempotencyKey`.
-2. The engine generates an order-agnostic request hash (`SHA-256`).
-3. An entry is inserted into `idempotency_keys` in an atomic transaction:
-   - If the key exists with matching hash: returns the cached response.
-   - If the key exists with a different hash: rejects immediately (`IDEMPOTENCY_CONFLICT`).
-   - If new: executes the transaction and marks `status = 'done'`.
-
-### 3.4. Two-Level Netting ($O(K \log K)$)
-Rather than executing $O(N \cdot M)$ nested loops over independent claims:
-- **Level 1**: Sort-merge matches claims on `NetworkOrderID` in a single pass.
-- **Level 2**: Aggregates matched volume per counterparty NP pair into a single net payment instruction:
-  $$\text{NetTransfer} = \sum \text{MatchedOrderAmount} - \sum \text{BFF}$$
-Empirical tests demonstrate a **1.84x throughput speedup and 7.2x memory allocation reduction**.
+| Invariant | Name | Mathematical / System Formulation | Enforcement Mechanism |
+| :--- | :--- | :--- | :--- |
+| **Inv-1** | **Global Zero-Sum** | $\sum \text{Debits} - \sum \text{Credits} \equiv 0$ | SQL deferred trigger `assert_balanced()` + memory ledger checks. |
+| **Inv-2** | **Ascending Lock Graph** | $\forall i < j : \text{AccountID}_i < \text{AccountID}_j$ | Deterministic ascending sort before acquiring row updates. Prevents deadlocks. |
+| **Inv-3** | **Effectively-Once Idempotency** | $\text{Post}(K, H) \rightarrow R; \ \text{Post}(K, H) \rightarrow R$ | Unique index on `idempotency_keys(key)` committed atomically with entries. |
+| **Inv-4** | **Non-Negative Constrained Balances** | $\text{Balance}(\text{account}) \ge 0 \quad \forall t$ | DB CHECK constraint `(NOT constrained OR balance_paise >= 0)` on `account_balances`. |
+| **Inv-5** | **Order Value Conservation** | $\text{Gross} = \text{Commission} + \text{BFF} + \text{SoRDue} + \text{Taxes} + \text{Residual}$ | Integer paise arithmetic validation on all order settlement lines. |
+| **Inv-6** | **Authoritative Refund Cap** | $\sum \text{Refunds} \le \text{SettledForwardAmount}$ | Bound against authoritative forward settled order record, counting suspense breaks. |
+| **Inv-7** | **Logistics Separation** | $\text{Orders}_{\text{Retail}} \cap \text{Orders}_{\text{Logistics}} = \emptyset$ | Distinct claim message partitioning per counterparty pair. |
+| **Inv-8** | **Dual Control Maker-Checker** | $\text{Proposer} \neq \text{Approver}$ | Server-side identity validation in reconciliation exception resolution. |
+| **Inv-9** | **RBI Calendar Discipline** | $\text{SettleDate} \notin \{\text{Sundays}, \text{2nd/4th Saturdays}, \text{RBI Holidays}\}$ | Versioned statutory holiday repository pinned strictly to `Asia/Kolkata`. |
+| **Inv-10**| **Merkle Auditability** | $\text{Root}_B = \text{MerkleTree}(\{\text{Entry}_1, \dots, \text{Entry}_N\})$ | RFC 6962 domain-separated cryptographic hashing (`0x00` leaf, `0x01` internal node). |
+| **Inv-11**| **Outbox Atomicity** | $\text{Tx}(\text{LedgerEntries} \cup \text{OutboxEvent})$ | Single database transaction boundary guarantees exactly-once dispatch intent. |
+| **Inv-12**| **Pre-Flight Validation** | $\forall o \in \text{Claim} : o.\text{Amount} > 0 \land \text{Unique}(o.\text{ID})$ | Structural validation rejecting duplicate orders with `DUPLICATE_ORDER`. |
+| **Inv-13**| **Gross-to-Net Tie-Out** | $\sum \text{NetInstructions} \equiv \sum \text{Gross} - \sum \text{BFF}$ | Matcher invariant checker validating bank payouts against gross dues. |
+| **Inv-14**| **Terminal Immutability** | $\text{State} \in \{\text{SETTLED}, \text{REJECTED}\} \implies \text{Terminal}$ | Finite state machine rejecting secondary transitions. |
+| **Inv-15**| **Zero Real PII** | $\forall \text{Fixture} : \text{Fixture} \in \text{SyntheticDataPool}$ | Synthetic bank accounts, IFSC codes, and PANs across all test fixtures. |
 
 ---
 
-## 4. Database Schema Architecture
+## 4. ONDC RSF 2.0 Spec Ambiguity Register
 
-Hisaab uses PostgreSQL 16 with range partitioning and database-level triggers to enforce immutability:
+When the regulatory specification leaves implementation choices unspecified, Hisaab documents the ambiguity, assigns a policy flag, and defaults to the strictest financial posture:
+
+- **AMB-001: Match Semantics (Order ID vs Component Amounts)**
+  - *Reference:* BRD §4.2 & Annexure Balance Check Example.
+  - *Issue:* Whether counterparty claims match solely on `NetworkOrderID` or require strict component equality.
+  - *Policy Flag:* `match_amount_tolerance_paise` (default: `0` paise / strict parity). Any non-zero tolerance residual is routed to `sa:tolerance_adjustment` to prevent monetary leakage.
+- **AMB-002: Insufficient Balance Behavior**
+  - *Reference:* BRD §4.2 Case 12.
+  - *Issue:* When Collector balance is inadequate to fund matched volume, whether to reject the entire batch or perform partial FIFO settlement.
+  - *Policy Flag:* `partial_fill_allowed` (default: `false` / all-or-nothing per BRD).
+- **AMB-003: Carry-Forward Expiration Horizon**
+  - *Reference:* BRD §4.2 Cases 9, 10, 11.
+  - *Issue:* Upper bound on retention of unmatched counterparty claims.
+  - *Policy Flag:* `carry_forward_days` (default: `2` business days).
+- **AMB-004: Cut-Off Window Time & Timezone Authority**
+  - *Reference:* BRD §3.1 Settlement Cycle.
+  - *Issue:* Ambiguity around exact cutoff time and server clock authority.
+  - *Policy Flag:* `cut_off_time_ist` (default: `23:59:59` IST Asia/Kolkata).
+- **AMB-005: Tax Withholding Allocation**
+  - *Reference:* BRD Annexure §5.
+  - *Issue:* Unbundled tax calculation between BAP and BPP.
+  - *Policy Flag:* `tax_reconciliation_mode` (default: `explicit_deduction_legs`).
+- **AMB-006: Insolvent Seller Refund Clawback**
+  - *Reference:* BRD §4.2 Case 16.
+  - *Issue:* How to handle consumer refunds when Seller App settlement account has insufficient funds.
+  - *Policy Flag:* `insolvent_seller_refund` (default: route to `sa:suspense` without overdrafting nodal pool).
+
+---
+
+## 5. Ledger Data Model & Double-Entry Schema
+
+PostgreSQL 16 partitioned tables enforce relational integrity and immutability:
 
 ```sql
--- Core Append-Only Ledger Entry (Partitioned by created_at)
-CREATE TABLE journal_entries (
-    id              BIGSERIAL,
-    transaction_id  BIGINT NOT NULL,
-    account_id      BIGINT NOT NULL,
-    direction       TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-    amount_paise    BIGINT NOT NULL CHECK (amount_paise > 0),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+-- Chart of accounts with normal balance convention
+CREATE TABLE accounts (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL CHECK (type IN ('asset', 'liability', 'equity', 'income', 'expense', 'external')),
+    currency TEXT NOT NULL DEFAULT 'INR',
+    constrained BOOLEAN NOT NULL DEFAULT FALSE,
+    normal_balance TEXT NOT NULL CHECK (normal_balance IN ('debit', 'credit')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Fast row-level non-negative balance checks without table-scan SUM()
+CREATE TABLE account_balances (
+    account_id BIGINT PRIMARY KEY REFERENCES accounts(id),
+    constrained BOOLEAN NOT NULL,
+    balance_paise BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT constrained_non_negative CHECK (NOT constrained OR balance_paise >= 0)
+);
+
+-- Append-only journal transactions (partitioned by effective date)
+CREATE TABLE journal_transactions (
+    id BIGSERIAL,
+    idempotency_key TEXT NOT NULL,
+    description TEXT NOT NULL,
+    cause_type TEXT NOT NULL,
+    cause_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
--- Database-Level Immutability Trigger
-CREATE OR REPLACE FUNCTION prevent_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION 'Direct mutation of % is prohibited. Use reversing entries.', TG_TABLE_NAME;
-END;
-$$;
+-- Double-entry legs with database-enforced zero-sum trigger
+CREATE TABLE journal_entries (
+    id BIGSERIAL,
+    transaction_id BIGINT NOT NULL,
+    account_id BIGINT NOT NULL REFERENCES accounts(id),
+    direction TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
+    amount_paise BIGINT NOT NULL CHECK (amount_paise > 0 AND amount_paise <= 10000000000000),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
-CREATE TRIGGER no_update_journal_entries
-    BEFORE UPDATE OR DELETE ON journal_entries
-    FOR EACH ROW EXECUTE FUNCTION prevent_mutation();
+-- Database Trigger Enforcing Double-Entry Zero-Sum
+CREATE CONSTRAINT TRIGGER journal_entries_balanced
+    AFTER INSERT ON journal_entries
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION assert_balanced();
+
+-- Database Trigger Preventing TRUNCATE on Core Accounting Tables
+CREATE TRIGGER journal_entries_no_truncate
+    BEFORE TRUNCATE ON journal_entries
+    FOR EACH STATEMENT EXECUTE FUNCTION no_truncate();
 ```
 
 ---
 
-## 5. Security & Regulatory Compliance
+## 6. Mathematical Foundations & Statutory Taxes
 
-1. **Cryptographic Signatures**: All Beckn `/settle` requests and `/on_settle` callbacks require `Ed25519` cryptographic signatures and `SHA-256` HTTP body digest headers.
-2. **Indian Business Calendar**: All settlement windows operate in `Asia/Kolkata` IST. Inter-bank settlements automatically roll forward over RBI gazetted holidays and 2nd/4th Saturdays.
-3. **Statutory Withholding**: Dedicated ledger accounts compute Section 194-O Income Tax TDS (0.1%/1.0%) and Section 52 GST TCS (1.0%) on the fly.
-4. **Zero Real Financial PII**: The test harness strictly prohibits real Indian financial identifiers. All accounts, IFSCs, and PANs use synthetic formats validated by automated pre-commit scanners.
+### 6.1. Integer Micro-Unit Banker's Rounding
+To eliminate half-paise rounding leaks on odd-paise amounts:
+1. Taxes are computed in micro-units ($10^{-4}$ INR or basis-point integer units).
+2. Deterministic Banker's Rounding (**RoundHalfEven**) resolves fractional values before debit/credit journal line generation.
+3. Conservation guarantees that $\sum \text{Deductions} + \text{NetPayout} \equiv \text{GrossAmount}$.
+
+### 6.2. Statutory Rates (October 2026 Reality)
+- **GST TCS**: 0.5% (0.25% CGST + 0.25% SGST) under Section 52 of CGST Act 2017 (per CGST Notification 15/2024 dated 10 July 2024).
+- **E-Commerce TDS**: 0.1% under Section 393(1) Table Sl. 8(v) of Income-tax Act 2025 (Payment Code 1035). Rate increases to 5.0% for sellers without PAN/Aadhaar.

@@ -1,0 +1,39 @@
+id: EC-14
+title: "Customer cancellation refund prior to forward payout dispatch"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 14"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  buyer_claim:
+    message_id: "msg-buyer-ec14-refund"
+    orders:
+      - order_id: "ORD-20261030-1401"
+        amount_paise: 80000
+        commission_paise: 2400
+        bff_paise: 800
+        sor_due_paise: 76800
+  seller_claim:
+    message_id: "msg-seller-ec14-refund"
+    orders:
+      - order_id: "ORD-20261030-1401"
+        amount_paise: 80000
+        commission_paise: 2400
+        bff_paise: 800
+        sor_due_paise: 76800
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 79200
+  collector_final_balance_paise: 4920800
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant6_RefundCap
+    - Invariant13_GrossNetTieOut

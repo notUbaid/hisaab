@@ -1,0 +1,39 @@
+id: EC-17
+title: "Post-settlement refund clawback after forward payout credited to Seller"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.3, Case 17"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  buyer_claim:
+    message_id: "msg-buyer-ec17-clawback"
+    orders:
+      - order_id: "ORD-20261030-1701"
+        amount_paise: 50000
+        commission_paise: 1500
+        bff_paise: 500
+        sor_due_paise: 48000
+  seller_claim:
+    message_id: "msg-seller-ec17-clawback"
+    orders:
+      - order_id: "ORD-20261030-1701"
+        amount_paise: 50000
+        commission_paise: 1500
+        bff_paise: 500
+        sor_due_paise: 48000
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 49500
+  collector_final_balance_paise: 4950500
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant6_RefundCap
+    - Invariant13_GrossNetTieOut

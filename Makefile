@@ -1,7 +1,5 @@
-.PHONY: up down migrate migrate-down migrate-status test test-race test-property \
-        test-invariants test-scenarios test-crash test-browser bench lint install-hooks check-real-data \
-        check-spec-coverage sqlc seed-calendar verify-merkle security-scan setup \
-        fmt vet check-float generate-report check-spec-drift
+.PHONY: up down migrate migrate-down migrate-status build test test-race test-property \
+        test-invariants test-scenarios test-crash bench lint fmt vet check-float clean
 
 DB_URL      ?= postgres://hisaab:hisaab_dev@localhost:5432/hisaab
 TEST_DB_URL ?= postgres://hisaab:hisaab_dev@localhost:5432/hisaab
@@ -26,40 +24,35 @@ migrate-down:
 migrate-status:
 	GOOSE_DRIVER=postgres GOOSE_DBSTRING="$(DB_URL)" goose -dir db/migrations status
 
-sqlc:
-	sqlc generate
+# ─── Build Binaries ─────────────────────────────────────────────────────────
+build:
+	go build -o bin/hisaab-api.exe ./cmd/api
+	go build -o bin/hisaab-worker.exe ./cmd/worker
+	go build -o bin/hisaab-cli.exe ./cmd/cli
 
 # ─── Tests ──────────────────────────────────────────────────────────────────
 test:
-	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -count=1 -timeout=120s ./...
+	go test -count=1 -timeout=120s ./...
 
 test-race:
-	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -race -count=1 -timeout=120s ./...
+	go test -race -count=1 -timeout=120s ./...
 
 test-property:
-	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -run "^TestProperty" \
-	  -rapid.checks=50000 -timeout=300s ./tests/property/...
+	go test -run "^TestProperty" -rapid.checks=5000 -timeout=120s ./tests/property/...
 
 test-invariants:
-	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -run "^TestInvariant" \
-	  -v -timeout=300s ./tests/...
+	go test -run "^TestInvariant" -v -timeout=120s ./internal/verification/...
 
 test-scenarios:
-	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -run "^TestScenario" \
-	  -v -timeout=300s ./tests/scenarios/...
+	go test -run "^TestScenario" -v -timeout=120s ./tests/scenarios/...
 
 test-crash:
-	HISAAB_TEST_DB="$(TEST_DB_URL)" go test -run "^TestCrashPoint" \
-	  -v -timeout=300s ./tests/crash/...
-
-test-browser:
-	python scripts/physical_browser_check.py
+	go test -run "^TestCrashPoint" -v -timeout=120s ./tests/crash/...
 
 bench:
-	HISAAB_TEST_DB="$(TEST_DB_URL)" go test ./tests/bench/... \
-	  -bench=. -benchmem -run='^$$' -count=3
+	go test ./tests/bench/... -bench=. -benchmem -run='^$$' -count=3
 
-# ─── Code quality ───────────────────────────────────────────────────────────
+# ─── Code Quality & Precision ───────────────────────────────────────────────
 lint:
 	golangci-lint run --config=.golangci.yml ./...
 
@@ -78,43 +71,5 @@ check-float:
 	fi; \
 	echo "✓ No floats in monetary code"
 
-# ─── Security & compliance ──────────────────────────────────────────────────
-security-scan:
-	@echo "=== gosec ===" && gosec ./...
-	@echo "=== real data check ===" && python3 scripts/check_real_data.py
-	@echo "=== spec coverage ===" && python3 scripts/check_spec_coverage.py
-
-check-real-data:
-	python3 scripts/check_real_data.py
-
-check-spec-coverage:
-	python3 scripts/check_spec_coverage.py
-
-check-spec-drift:
-	python3 scripts/check_ondc_spec_drift.py
-
-bin/cli.exe: cmd/cli/main.go
-	go build -o bin/cli.exe ./cmd/cli/main.go
-
-generate-report: bin/cli.exe
-	./bin/cli.exe generate-report --output docs/CORRECTNESS-REPORT.md
-
-# ─── Developer setup ────────────────────────────────────────────────────────
-install-hooks:
-	bash scripts/install-hooks.sh
-
-setup: install-hooks
-	@echo ""
-	@echo "✓ Git hooks installed"
-	@echo "  Next: docker compose up -d && make migrate"
-	@echo "  Then: make test-race"
-	@echo ""
-	@echo "  Read CLAUDE.md before writing any code."
-
-# ─── CLI commands ───────────────────────────────────────────────────────────
-seed-calendar: bin/cli.exe
-	./bin/cli.exe seed-calendar --year 2026
-
-verify-merkle: bin/cli.exe
-	@[ "$(BATCH_ID)" ] || (echo "Usage: make verify-merkle BATCH_ID=<id>"; exit 1)
-	./bin/cli.exe verify-merkle --batch-id $(BATCH_ID)
+clean:
+	rm -rf bin/

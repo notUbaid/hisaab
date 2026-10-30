@@ -37,8 +37,32 @@ type TaxBreakdown struct {
 	NetMerchantDue   ledger.AmountPaise `json:"net_merchant_due_paise"`
 }
 
+// RoundHalfEven performs deterministic Banker's rounding on integer division (numerator / denominator).
+// It eliminates sub-paise truncation bias while adhering to a strict zero-float policy.
+func RoundHalfEven(num, denom int64) int64 {
+	if denom <= 0 {
+		return 0
+	}
+	quot := num / denom
+	rem := num % denom
+
+	half := denom / 2
+	isExactHalf := (denom%2 == 0) && (rem == half)
+
+	if rem > half {
+		return quot + 1
+	} else if isExactHalf {
+		if quot%2 != 0 {
+			return quot + 1
+		}
+		return quot
+	}
+	return quot
+}
+
 // CalculateTaxWithholding calculates exact statutory withholding in integer paise.
-// It guarantees paise integrity (zero rounding leakage) and preserves Invariant 5.
+// It uses sub-paise micro-units (basis points) and deterministic Banker's rounding
+// to eliminate rounding leakage and preserve Invariant 5 (Order Conservation).
 func CalculateTaxWithholding(
 	orderAmount ledger.AmountPaise,
 	commission ledger.AmountPaise,
@@ -56,9 +80,11 @@ func CalculateTaxWithholding(
 	grossSoR := orderAmount - commission - bff
 
 	// GST TCS is calculated on net value of taxable supplies (excluding platform fees)
+	// Uses Banker's Rounding on micro-paise units (1 bps = 1/10000)
 	var gstTCS ledger.AmountPaise
 	if cfg.GSTTCSBps > 0 {
-		gstTCS = (grossSoR * ledger.AmountPaise(cfg.GSTTCSBps)) / 10000
+		microTCS := int64(grossSoR) * cfg.GSTTCSBps
+		gstTCS = ledger.AmountPaise(RoundHalfEven(microTCS, 10000))
 	}
 
 	// TDS under Section 393(1) (formerly Section 194-O) is calculated on gross sales value
@@ -69,7 +95,8 @@ func CalculateTaxWithholding(
 			tdsBps = 500 // 5.0% without PAN under statutory withholding rules
 		}
 		if tdsBps > 0 {
-			tds = (orderAmount * ledger.AmountPaise(tdsBps)) / 10000
+			microTDS := int64(orderAmount) * tdsBps
+			tds = ledger.AmountPaise(RoundHalfEven(microTDS, 10000))
 		}
 	}
 

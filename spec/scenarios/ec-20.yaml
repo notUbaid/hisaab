@@ -1,0 +1,41 @@
+id: EC-20
+title: "Cut-off timestamp boundary race (IST 23:59:59 rollover)"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.4, Case 20"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-31" # Rolled over from 2026-10-30 23:59:59
+  policy_flags:
+    cut_off_time_ist: "23:59:59"
+  buyer_claim:
+    message_id: "msg-buyer-ec20-boundary"
+    orders:
+      - order_id: "ORD-20261030-2001"
+        amount_paise: 100000
+        commission_paise: 3000
+        bff_paise: 1000
+        sor_due_paise: 96000
+  seller_claim:
+    message_id: "msg-seller-ec20-boundary"
+    orders:
+      - order_id: "ORD-20261030-2001"
+        amount_paise: 100000
+        commission_paise: 3000
+        bff_paise: 1000
+        sor_due_paise: 96000
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 99000
+  collector_final_balance_paise: 4901000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant9_RBICalendarDiscipline
+    - Invariant13_GrossNetTieOut

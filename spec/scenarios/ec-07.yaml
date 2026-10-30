@@ -1,0 +1,35 @@
+id: EC-07
+title: "Claim missing mandatory schema fields (Synchronous Validation Failure)"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 7"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  buyer_claim:
+    message_id: "" # Missing message_id violates Beckn RSF schema
+    orders:
+      - order_id: "ORD-20261030-701"
+        amount_paise: 100000
+        commission_paise: 3000
+        bff_paise: 1000
+  seller_claim:
+    message_id: "msg-seller-ec07-001"
+    orders:
+      - order_id: "ORD-20261030-701"
+        amount_paise: 100000
+        commission_paise: 3000
+        bff_paise: 1000
+
+then:
+  match_status: "UNMATCHED"
+  error_code: "SCHEMA_VALIDATION_FAILURE"
+  matched_orders_count: 0
+  unmatched_orders_count: 0
+  net_payout_paise: 0
+  collector_final_balance_paise: 5000000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance

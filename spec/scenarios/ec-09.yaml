@@ -1,0 +1,40 @@
+id: EC-09
+title: "Late counterpart arrival within carry-forward window (T+1 match)"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.2, Case 9"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-31"
+  policy_flags:
+    carry_forward_days: 2
+  buyer_claim:
+    message_id: "msg-buyer-ec09-t"
+    orders:
+      - order_id: "ORD-20261030-901"
+        amount_paise: 200000
+        commission_paise: 6000
+        bff_paise: 2000
+        sor_due_paise: 192000
+  seller_claim:
+    message_id: "msg-seller-ec09-t1"
+    orders:
+      - order_id: "ORD-20261030-901"
+        amount_paise: 200000
+        commission_paise: 6000
+        bff_paise: 2000
+        sor_due_paise: 192000
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 198000
+  collector_final_balance_paise: 4802000
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant13_GrossNetTieOut

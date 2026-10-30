@@ -1,0 +1,39 @@
+id: EC-19
+title: "Claim submitted on Indian Bank Holiday (Rollover to Next RBI Business Day)"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.4, Case 19"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-01-27" # Shifted from 2026-01-26 (Republic Day Monday)
+  buyer_claim:
+    message_id: "msg-buyer-ec19-holiday"
+    orders:
+      - order_id: "ORD-20260126-1901"
+        amount_paise: 150000
+        commission_paise: 4500
+        bff_paise: 1500
+        sor_due_paise: 144000
+  seller_claim:
+    message_id: "msg-seller-ec19-holiday"
+    orders:
+      - order_id: "ORD-20260126-1901"
+        amount_paise: 150000
+        commission_paise: 4500
+        bff_paise: 1500
+        sor_due_paise: 144000
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 148500
+  collector_final_balance_paise: 4851500
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant9_RBICalendarDiscipline
+    - Invariant13_GrossNetTieOut
