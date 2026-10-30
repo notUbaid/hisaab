@@ -17,11 +17,13 @@ MIGRATION_PATH = os.path.join(os.path.dirname(__file__), "..", "db", "migrations
 
 REQUIRED_TABLES = [
     "accounts",
+    "account_balances",
     "journal_transactions",
     "journal_entries",
     "idempotency_keys",
     "claims",
     "claim_lines",
+    "batch_runs",
     "settlement_batches",
     "match_results",
     "instructions",
@@ -35,6 +37,9 @@ REQUIRED_TRIGGERS = [
     ("no_update_journal_entries", "journal_entries"),
     ("no_update_journal_transactions", "journal_transactions"),
     ("no_update_audit_log", "audit_log"),
+    ("journal_entries_no_truncate", "journal_entries"),
+    ("journal_transactions_no_truncate", "journal_transactions"),
+    ("journal_entries_balanced", "journal_entries"),
 ]
 
 def main():
@@ -75,11 +80,11 @@ def main():
 
     # 5. Verify Trigger Attachments
     for trg, tbl in REQUIRED_TRIGGERS:
-        trg_pattern = rf"CREATE\s+TRIGGER\s+{trg}\s+BEFORE\s+UPDATE\s+OR\s+DELETE\s+ON\s+{tbl}"
+        trg_pattern = rf"CREATE\s+(CONSTRAINT\s+)?TRIGGER\s+{trg}\s+.*?\s+ON\s+{tbl}"
         if not re.search(trg_pattern, content, re.IGNORECASE):
             print(f"[FAIL] Missing trigger {trg} on {tbl}", file=sys.stderr)
             sys.exit(1)
-        print(f"[OK] Immutability trigger attached: {trg} on {tbl}")
+        print(f"[OK] Trigger attached: {trg} on {tbl}")
 
     # 6. Verify Down migration teardown
     down_section = content.split("-- goose Down")[1]

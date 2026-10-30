@@ -86,6 +86,7 @@ func TestOutboxProcessor_DrainInMemory_Success(t *testing.T) {
 func TestOutboxProcessor_DrainInMemory_FailureAndRetry(t *testing.T) {
 	cfg := DefaultWorkerConfig()
 	cfg.MaxRetries = 2
+	cfg.BaseBackoff = 0 // Instant retry for test
 	processor := NewOutboxProcessor(cfg, nil, nil)
 
 	// Enqueue malformed bank instruction (amount 0)
@@ -132,7 +133,9 @@ func TestOutboxProcessor_DrainInMemory_FailureAndRetry(t *testing.T) {
 }
 
 func TestOutboxProcessor_UnknownEventType(t *testing.T) {
-	processor := NewOutboxProcessor(DefaultWorkerConfig(), nil, nil)
+	cfg := DefaultWorkerConfig()
+	cfg.BaseBackoff = 0
+	processor := NewOutboxProcessor(cfg, nil, nil)
 	processor.EnqueueInMemory(OutboxRecord{
 		ID:        1,
 		EventType: "unknown.event",
@@ -147,5 +150,32 @@ func TestOutboxProcessor_UnknownEventType(t *testing.T) {
 	}
 	if processor.inMemoryDB[0].RetryCount != 1 {
 		t.Errorf("Expected retry count 1, got %d", processor.inMemoryDB[0].RetryCount)
+	}
+}
+
+func TestOutboxProcessor_ExponentialBackoffSchedule(t *testing.T) {
+	cfg := DefaultWorkerConfig()
+	cfg.MaxRetries = 5
+	cfg.BaseBackoff = 2 * time.Second
+	processor := NewOutboxProcessor(cfg, nil, nil)
+
+	processor.EnqueueInMemory(OutboxRecord{
+		ID:        1,
+		EventType: "bad.event",
+		Payload:   []byte(`{}`),
+		Status:    "pending",
+		CreatedAt: time.Now(),
+	})
+
+	now := time.Now()
+	_, _ = processor.DrainInMemory(context.Background())
+
+	// Attempt 1 fails -> next attempt should be scheduled ~2s in future
+	rec := processor.inMemoryDB[0]
+	if rec.Attempts != 1 {
+		t.Fatalf("Expected 1 attempt, got %d", rec.Attempts)
+	}
+	if rec.NextAttemptAt.Before(now.Add(1 * time.Second)) {
+		t.Errorf("Expected NextAttemptAt to be scheduled ~2s in future, got %v", rec.NextAttemptAt)
 	}
 }

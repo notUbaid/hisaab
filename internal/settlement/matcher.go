@@ -10,12 +10,13 @@ import (
 )
 
 var (
-	ErrMixedNPPairs           = errors.New("settlement: claim contains mixed counterparty NP pairs (EC-05)")
-	ErrLogisticsBundled       = errors.New("settlement: logistics fees bundled in core retail order claim (EC-06)")
-	ErrCounterpartMissing     = errors.New("settlement: counterpart claim missing for NP pair (EC-01 / EC-02)")
-	ErrInsufficientBalance    = errors.New("settlement: insufficient balance in Collector settlement account (EC-12)")
-	ErrAmountMismatch         = errors.New("settlement: order amount or component mismatch between claims (EC-08)")
-	ErrGrossNetTieOutFailed   = errors.New("settlement: gross obligations do not tie out to net instruction (Invariant 13)")
+	ErrMixedNPPairs         = errors.New("settlement: claim contains mixed counterparty NP pairs (EC-05)")
+	ErrLogisticsBundled     = errors.New("settlement: logistics fees bundled in core retail order claim (EC-06)")
+	ErrCounterpartMissing   = errors.New("settlement: counterpart claim missing for NP pair (EC-01 / EC-02)")
+	ErrInsufficientBalance  = errors.New("settlement: insufficient balance in Collector settlement account (EC-12)")
+	ErrAmountMismatch       = errors.New("settlement: order amount or component mismatch between claims (EC-08)")
+	ErrGrossNetTieOutFailed = errors.New("settlement: gross obligations do not tie out to net instruction (Invariant 13)")
+	ErrDuplicateOrder       = errors.New("settlement: duplicate order network_order_id in claim payload (DUPLICATE_ORDER)")
 )
 
 // MatchingPolicy configures matching and settlement behavior.
@@ -49,14 +50,22 @@ func ValidateClaimPayload(claim *SettleClaimPayload) error {
 	if claim == nil {
 		return errors.New("settlement: claim payload is nil")
 	}
+	if claim.Context == nil || claim.Context.MessageID == "" {
+		return errors.New("settlement: context.message_id is mandatory")
+	}
 	if claim.NPPairID == "" {
 		return errors.New("settlement: np_pair_id is required")
 	}
 
+	seenOrders := make(map[string]bool)
 	for _, order := range claim.Orders {
 		if order.NetworkOrderID == "" {
 			return errors.New("settlement: order network_order_id cannot be empty")
 		}
+		if seenOrders[order.NetworkOrderID] {
+			return fmt.Errorf("%w: duplicate order ID %s", ErrDuplicateOrder, order.NetworkOrderID)
+		}
+		seenOrders[order.NetworkOrderID] = true
 		if order.OrderAmountPaise <= 0 {
 			return errors.New("settlement: order amount must be strictly greater than zero")
 		}
@@ -134,10 +143,17 @@ func (m *Matcher) MatchAndNet(
 		buyerOrderMap[o.NetworkOrderID] = o
 	}
 
-	sellerMatchedKeys := make(map[string]bool)
+	seenSellerKeys := make(map[string]bool)
+	processedBuyerKeys := make(map[string]bool)
 
 	// Compare Seller claim against Buyer claim
 	for _, sOrder := range sellerClaim.Orders {
+		if seenSellerKeys[sOrder.NetworkOrderID] {
+			// Skip duplicate orders within seller claim to prevent duplicate payout (B1)
+			continue
+		}
+		seenSellerKeys[sOrder.NetworkOrderID] = true
+
 		bOrder, exists := buyerOrderMap[sOrder.NetworkOrderID]
 		if !exists {
 			// Seller order has no buyer counterpart (EC-04 / EC-02 subset)
@@ -153,7 +169,21 @@ func (m *Matcher) MatchAndNet(
 			continue
 		}
 
-		sellerMatchedKeys[sOrder.NetworkOrderID] = true
+		processedBuyerKeys[bOrder.NetworkOrderID] = true
+
+		// Also check component parity (Commission & BFF) strictly (B2)
+		if bOrder.CommissionPaise != sOrder.CommissionPaise || bOrder.BFFPaise != sOrder.BFFPaise {
+			result.UnmatchedOrders = append(result.UnmatchedOrders, MatchedOrder{
+				NetworkOrderID:   sOrder.NetworkOrderID,
+				OrderAmountPaise: sOrder.OrderAmountPaise,
+				CommissionPaise:  sOrder.CommissionPaise,
+				BFFPaise:         sOrder.BFFPaise,
+				SoRDuePaise:      sOrder.SoRDuePaise,
+				Status:           MatchStatusAmountMismatch,
+				Reason:           "Component breakdown mismatch (EC-08): commission/BFF mismatch",
+			})
+			continue
+		}
 
 		// Check amount differences
 		diff := bOrder.OrderAmountPaise - sOrder.OrderAmountPaise
@@ -176,33 +206,20 @@ func (m *Matcher) MatchAndNet(
 			continue
 		}
 
-		// Also check component parity (Commission & BFF)
-		if bOrder.CommissionPaise != sOrder.CommissionPaise || bOrder.BFFPaise != sOrder.BFFPaise {
-			if m.policy.AmountTolerancePaise == 0 {
-				result.UnmatchedOrders = append(result.UnmatchedOrders, MatchedOrder{
-					NetworkOrderID:   sOrder.NetworkOrderID,
-					OrderAmountPaise: sOrder.OrderAmountPaise,
-					CommissionPaise:  sOrder.CommissionPaise,
-					BFFPaise:         sOrder.BFFPaise,
-					SoRDuePaise:      sOrder.SoRDuePaise,
-					Status:           MatchStatusAmountMismatch,
-					Reason: fmt.Sprintf("Component breakdown mismatch (EC-08): commission/BFF mismatch"),
-				})
-				continue
-			}
-		}
+		// Order matched! Record authoritative order amount collected from buyer
+		residual := bOrder.OrderAmountPaise - sOrder.OrderAmountPaise
+		result.ToleranceResidualPaise += residual
 
-		// Order matched!
 		result.MatchedOrders = append(result.MatchedOrders, MatchedOrder{
 			NetworkOrderID:   sOrder.NetworkOrderID,
-			OrderAmountPaise: sOrder.OrderAmountPaise,
+			OrderAmountPaise: bOrder.OrderAmountPaise,
 			CommissionPaise:  sOrder.CommissionPaise,
 			BFFPaise:         sOrder.BFFPaise,
 			SoRDuePaise:      sOrder.SoRDuePaise,
 			Status:           MatchStatusMatched,
 		})
 
-		result.TotalMatched += sOrder.OrderAmountPaise
+		result.TotalMatched += bOrder.OrderAmountPaise
 		result.TotalCommission += sOrder.CommissionPaise
 		result.TotalSoRDue += sOrder.SoRDuePaise
 		result.TotalBFF += sOrder.BFFPaise
@@ -210,7 +227,7 @@ func (m *Matcher) MatchAndNet(
 
 	// Capture Buyer orders that had no Seller counterpart
 	for _, bOrder := range buyerClaim.Orders {
-		if !sellerMatchedKeys[bOrder.NetworkOrderID] {
+		if !processedBuyerKeys[bOrder.NetworkOrderID] {
 			result.UnmatchedOrders = append(result.UnmatchedOrders, MatchedOrder{
 				NetworkOrderID:   bOrder.NetworkOrderID,
 				OrderAmountPaise: bOrder.OrderAmountPaise,
@@ -275,11 +292,21 @@ func (m *Matcher) MatchAndNet(
 
 	// Generate Net Instruction (M2.7 & Invariant 13)
 	// Collector transfers net obligations to Receiver
-	if requiredTransfer > 0 {
+	sellerTransfer := requiredTransfer - result.ToleranceResidualPaise
+	if sellerTransfer > 0 {
 		result.Instructions = append(result.Instructions, NetInstruction{
 			FromAccount: buyerClaim.CollectorAcc,
 			ToAccount:   sellerClaim.ReceiverAcc,
-			AmountPaise: requiredTransfer,
+			AmountPaise: sellerTransfer,
+			BatchID:     batchID,
+		})
+	}
+	// Post tolerated residual to named tolerance adjustment account so no money evaporates (B2)
+	if result.ToleranceResidualPaise > 0 {
+		result.Instructions = append(result.Instructions, NetInstruction{
+			FromAccount: buyerClaim.CollectorAcc,
+			ToAccount:   "sa:tolerance_adjustment",
+			AmountPaise: result.ToleranceResidualPaise,
 			BatchID:     batchID,
 		})
 	}

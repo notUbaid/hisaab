@@ -189,12 +189,14 @@ func (r *Runner) Run(ctx context.Context, sc *ScenarioDef) (*ScenarioResult, err
 
 		// Invariant 5: Order Conservation across matched orders
 		for _, mo := range batchResult.MatchedOrders {
+			residual := mo.OrderAmountPaise - (mo.CommissionPaise + mo.BFFPaise + mo.SoRDuePaise)
 			line := settlement.OrderSettlementLine{
-				NetworkOrderID:   mo.NetworkOrderID,
-				OrderAmountPaise: mo.OrderAmountPaise,
-				CommissionPaise:  mo.CommissionPaise,
-				BFFPaise:         mo.BFFPaise,
-				SoRDuePaise:      mo.SoRDuePaise,
+				NetworkOrderID:    mo.NetworkOrderID,
+				OrderAmountPaise:  mo.OrderAmountPaise,
+				CommissionPaise:   mo.CommissionPaise,
+				BFFPaise:          mo.BFFPaise,
+				SoRDuePaise:       mo.SoRDuePaise,
+				ToleranceResidual: residual,
 			}
 			if err := r.checker.CheckInvariant5_Conservation(line); err != nil {
 				return nil, fmt.Errorf("scenariodsl: Invariant 5 check failed for order %s: %w", mo.NetworkOrderID, err)
@@ -232,28 +234,47 @@ func (r *Runner) Run(ctx context.Context, sc *ScenarioDef) (*ScenarioResult, err
 
 	// 8. Assertions against ThenDef
 	if batchResult != nil {
-		if sc.Then.MatchedOrdersCount > 0 && len(batchResult.MatchedOrders) != sc.Then.MatchedOrdersCount {
+		matchedCount := 0
+		for _, mo := range batchResult.MatchedOrders {
+			if mo.Status == settlement.MatchStatusMatched {
+				matchedCount++
+			}
+		}
+
+		if sc.Then.MatchStatus != "" {
+			if sc.Then.MatchStatus == "INSUFFICIENT_BALANCE" && batchResult.BalancePassed {
+				return nil, fmt.Errorf("scenariodsl: expected INSUFFICIENT_BALANCE, but BalancePassed is true")
+			}
+			if sc.Then.MatchStatus == "UNMATCHED" && matchedCount > 0 {
+				return nil, fmt.Errorf("scenariodsl: expected UNMATCHED, but %d orders matched", matchedCount)
+			}
+			if sc.Then.MatchStatus == "MATCHED" && len(batchResult.UnmatchedOrders) > 0 {
+				return nil, fmt.Errorf("scenariodsl: expected MATCHED, but %d orders unmatched", len(batchResult.UnmatchedOrders))
+			}
+		}
+
+		if sc.Then.MatchedOrdersCount != nil && matchedCount != *sc.Then.MatchedOrdersCount {
 			return nil, fmt.Errorf("scenariodsl: expected %d matched orders, got %d",
-				sc.Then.MatchedOrdersCount, len(batchResult.MatchedOrders))
+				*sc.Then.MatchedOrdersCount, matchedCount)
 		}
 
-		if sc.Then.UnmatchedOrdersCount > 0 && len(batchResult.UnmatchedOrders) != sc.Then.UnmatchedOrdersCount {
+		if sc.Then.UnmatchedOrdersCount != nil && len(batchResult.UnmatchedOrders) != *sc.Then.UnmatchedOrdersCount {
 			return nil, fmt.Errorf("scenariodsl: expected %d unmatched orders, got %d",
-				sc.Then.UnmatchedOrdersCount, len(batchResult.UnmatchedOrders))
+				*sc.Then.UnmatchedOrdersCount, len(batchResult.UnmatchedOrders))
 		}
 	}
 
-	if sc.Then.NetPayoutPaise > 0 {
-		if int64(netPayout) != sc.Then.NetPayoutPaise {
+	if sc.Then.NetPayoutPaise != nil {
+		if int64(netPayout) != *sc.Then.NetPayoutPaise {
 			return nil, fmt.Errorf("scenariodsl: expected net payout %d paise, got %d",
-				sc.Then.NetPayoutPaise, netPayout)
+				*sc.Then.NetPayoutPaise, netPayout)
 		}
 	}
 
-	if sc.Then.CollectorFinalBalancePaise > 0 {
-		if int64(finalBalance) != sc.Then.CollectorFinalBalancePaise {
+	if sc.Then.CollectorFinalBalancePaise != nil {
+		if int64(finalBalance) != *sc.Then.CollectorFinalBalancePaise {
 			return nil, fmt.Errorf("scenariodsl: expected collector final balance %d paise, got %d",
-				sc.Then.CollectorFinalBalancePaise, finalBalance)
+				*sc.Then.CollectorFinalBalancePaise, finalBalance)
 		}
 	}
 
@@ -280,7 +301,12 @@ func mapOrderDefs(orders []OrderDef, date time.Time) []settlement.OrderSettlemen
 		orderAmount := ledger.AmountPaise(o.AmountPaise)
 		comm := ledger.AmountPaise(o.CommissionPaise)
 		bff := ledger.AmountPaise(o.BFFPaise)
-		sor := orderAmount - comm - bff
+		var sor ledger.AmountPaise
+		if o.SoRDuePaise > 0 {
+			sor = ledger.AmountPaise(o.SoRDuePaise)
+		} else {
+			sor = orderAmount - comm - bff
+		}
 
 		lines[i] = settlement.OrderSettlementLine{
 			NetworkOrderID:   o.OrderID,

@@ -1,15 +1,12 @@
 package ledger
 
 import (
+	"context"
 	"errors"
 	"time"
 )
 
-// AmountPaise represents a monetary value in Indian Paise (1/100th of an Indian Rupee).
-// Floats are strictly prohibited for monetary calculations.
-type AmountPaise int64
-
-// Direction specifies whether a journal entry is a debit or a credit.
+// Direction represents debit or credit double-entry leg.
 type Direction string
 
 const (
@@ -17,17 +14,7 @@ const (
 	Credit Direction = "credit"
 )
 
-// CauseType indicates the operational event triggering a journal transaction.
-type CauseType string
-
-const (
-	CauseClaim       CauseType = "claim"
-	CauseInstruction CauseType = "instruction"
-	CauseBankMessage CauseType = "bank_message"
-	CauseAdjustment  CauseType = "adjustment"
-)
-
-// AccountType classifies the nature of an account in the double-entry chart of accounts.
+// AccountType models the normal balance convention in financial ledgers.
 type AccountType string
 
 const (
@@ -39,6 +26,23 @@ const (
 	AccountExternal  AccountType = "external"
 )
 
+// NormalBalance returns whether the account is normally Debit or Credit balanced.
+func (t AccountType) NormalBalance() Direction {
+	switch t {
+	case AccountAsset, AccountExpense:
+		return Debit
+	default:
+		return Credit
+	}
+}
+
+// AmountPaise represents exact currency values in paise (1 INR = 100 paise).
+type AmountPaise int64
+
+// MaxLineAmountPaise caps individual entry amounts at 10^13 paise (100 billion INR / 10,000 crore)
+// to prevent integer overflow during aggregate additions.
+const MaxLineAmountPaise AmountPaise = 10_000_000_000_000
+
 var (
 	ErrUnbalancedTransaction = errors.New("ledger: transaction debits and credits do not balance to zero")
 	ErrZeroOrNegativeEntry   = errors.New("ledger: entry amount must be strictly greater than zero paise")
@@ -47,29 +51,41 @@ var (
 	ErrDuplicateIdempotency  = errors.New("ledger: idempotency key already processed with different payload")
 	ErrAccountNotFound       = errors.New("ledger: specified account name does not exist")
 	ErrEmptyAccountName      = errors.New("ledger: account name cannot be empty")
+	ErrAmountOverflow        = errors.New("ledger: amount exceeds maximum allowed value (10^13 paise)")
 )
 
-// Account represents an entity account record.
+// CauseType specifies why a ledger transaction occurred.
+type CauseType string
+
+const (
+	CauseClaim       CauseType = "claim"
+	CauseInstruction CauseType = "instruction"
+	CauseRefund      CauseType = "refund"
+	CauseAdjustment  CauseType = "adjustment"
+)
+
+// Account represents a registered chart of accounts node.
 type Account struct {
-	ID          int64       `json:"id"`
-	Name        string      `json:"name"`
-	Type        AccountType `json:"type"`
-	Currency    string      `json:"currency"`
-	Constrained bool        `json:"constrained"`
-	CreatedAt   time.Time   `json:"created_at"`
+	ID            int64       `json:"id"`
+	Name          string      `json:"name"`
+	Type          AccountType `json:"type"`
+	Currency      string      `json:"currency"`
+	Constrained   bool        `json:"constrained"`
+	NormalBalance Direction   `json:"normal_balance"`
+	CreatedAt     time.Time   `json:"created_at"`
 }
 
-// EntryLine represents an individual posting leg in a proposed transaction.
+// EntryLine specifies an individual debit or credit leg for a transaction.
 type EntryLine struct {
 	AccountName string      `json:"account_name"`
 	Direction   Direction   `json:"direction"`
 	AmountPaise AmountPaise `json:"amount_paise"`
 }
 
-// PostRequest represents an atomic double-entry journal posting request.
+// PostRequest represents an inbound double-entry journal posting request.
 type PostRequest struct {
 	IdempotencyKey string      `json:"idempotency_key"`
-	RequestHash    string      `json:"request_hash"`
+	RequestHash    string      `json:"request_hash,omitempty"`
 	CauseType      CauseType   `json:"cause_type"`
 	CauseID        int64       `json:"cause_id"`
 	Description    string      `json:"description"`
@@ -77,7 +93,7 @@ type PostRequest struct {
 	PostedAt       time.Time   `json:"posted_at"`
 }
 
-// PostResult summarizes the persisted transaction details.
+// PostResult models the successful outcome of committing a journal transaction.
 type PostResult struct {
 	TransactionID  int64       `json:"transaction_id"`
 	IdempotencyKey string      `json:"idempotency_key"`
@@ -86,14 +102,20 @@ type PostResult struct {
 	CreatedAt      time.Time   `json:"created_at"`
 }
 
-// JournalTransaction represents a persisted atomic financial posting event.
+// Engine unifies the interface between MemoryLedger and PostgreSQL Ledger.
+type Engine interface {
+	Post(ctx context.Context, req PostRequest) (*PostResult, error)
+	Balance(ctx context.Context, accountName string) (AmountPaise, error)
+}
+
+// JournalTransaction represents an immutable group of balanced entry legs.
 type JournalTransaction struct {
-	ID             int64       `json:"id"`
-	IdempotencyKey string      `json:"idempotency_key"`
-	Description    string      `json:"description"`
-	CauseType      CauseType   `json:"cause_type"`
-	CauseID        int64       `json:"cause_id"`
-	CreatedAt      time.Time   `json:"created_at"`
+	ID             int64     `json:"id"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	Description    string    `json:"description"`
+	CauseType      CauseType `json:"cause_type"`
+	CauseID        int64     `json:"cause_id"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // JournalEntry represents an individual posted debit or credit leg.
@@ -105,4 +127,27 @@ type JournalEntry struct {
 	Direction     Direction   `json:"direction"`
 	AmountPaise   AmountPaise `json:"amount_paise"`
 	CreatedAt     time.Time   `json:"created_at"`
+}
+
+// FailpointTrigger abstracts fault injection hooks during ledger execution.
+type FailpointTrigger interface {
+	Trigger(name string) error
+}
+
+type failpointKey struct{}
+
+// ContextWithFailpoint attaches a FailpointTrigger to ctx.
+func ContextWithFailpoint(ctx context.Context, fp FailpointTrigger) context.Context {
+	return context.WithValue(ctx, failpointKey{}, fp)
+}
+
+// TriggerFailpoint executes a named failpoint if attached to ctx.
+func TriggerFailpoint(ctx context.Context, name string) error {
+	if ctx == nil {
+		return nil
+	}
+	if fp, ok := ctx.Value(failpointKey{}).(FailpointTrigger); ok && fp != nil {
+		return fp.Trigger(name)
+	}
+	return nil
 }

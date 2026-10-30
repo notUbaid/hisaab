@@ -24,24 +24,24 @@ func TestCalculateTaxWithholding_StandardRates(t *testing.T) {
 		t.Fatalf("expected gross SoR 144000, got %d", tb.GrossSoRDuePaise)
 	}
 
-	// GST TCS: 1% of 144000 = 1440 paise (₹14.40)
-	if tb.GSTTCSPaise != 1440 {
-		t.Fatalf("expected GST TCS 1440, got %d", tb.GSTTCSPaise)
+	// GST TCS: 0.5% (50 bps) of 144000 = 720 paise (₹7.20) per CGST Notification 15/2024
+	if tb.GSTTCSPaise != 720 {
+		t.Fatalf("expected GST TCS 720, got %d", tb.GSTTCSPaise)
 	}
 
-	// TDS (194-O): 0.1% of 150000 = 150 paise (₹1.50)
+	// TDS (Section 393(1)): 0.1% (10 bps) of 150000 = 150 paise (₹1.50)
 	if tb.TDSPaise != 150 {
 		t.Fatalf("expected TDS 150, got %d", tb.TDSPaise)
 	}
 
-	// Total Tax = 1440 + 150 = 1590 paise
-	if tb.TotalTaxPaise != 1590 {
-		t.Fatalf("expected total tax 1590, got %d", tb.TotalTaxPaise)
+	// Total Tax = 720 + 150 = 870 paise
+	if tb.TotalTaxPaise != 870 {
+		t.Fatalf("expected total tax 870, got %d", tb.TotalTaxPaise)
 	}
 
-	// Net Merchant Due = 144000 - 1590 = 142410 paise
-	if tb.NetMerchantDue != 142410 {
-		t.Fatalf("expected net merchant due 142410, got %d", tb.NetMerchantDue)
+	// Net Merchant Due = 144000 - 870 = 143130 paise
+	if tb.NetMerchantDue != 143130 {
+		t.Fatalf("expected net merchant due 143130, got %d", tb.NetMerchantDue)
 	}
 
 	// Conservation check
@@ -71,7 +71,7 @@ func TestCalculateTaxWithholding_PANExemption(t *testing.T) {
 
 func TestCalculateTaxWithholding_HigherRateNoPAN(t *testing.T) {
 	cfg := nptoolkit.DefaultIndiaTaxConfig()
-	cfg.TDSBps = 100 // 1% without PAN under Section 206AA
+	cfg.HasNoPAN = true // 5% without PAN under statutory withholding rules
 
 	orderAmount := ledger.AmountPaise(100000)
 	commission := ledger.AmountPaise(3000)
@@ -82,9 +82,9 @@ func TestCalculateTaxWithholding_HigherRateNoPAN(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// 1% of 100000 = 1000 paise
-	if tb.TDSPaise != 1000 {
-		t.Fatalf("expected 1000 paise TDS, got %d", tb.TDSPaise)
+	// 5% of 100000 = 5000 paise
+	if tb.TDSPaise != 5000 {
+		t.Fatalf("expected 5000 paise TDS without PAN, got %d", tb.TDSPaise)
 	}
 }
 

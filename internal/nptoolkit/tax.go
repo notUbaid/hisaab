@@ -9,16 +9,18 @@ import (
 
 // TaxConfig holds configurable statutory withholding parameters in basis points (1 bps = 0.01%).
 type TaxConfig struct {
-	GSTTCSBps int64 // e.g. 100 bps = 1.0% under Section 52 of CGST Act 2017
-	TDSBps    int64 // e.g. 10 bps = 0.1% under Section 194-O of Income Tax Act 1961 (or 100 bps without PAN)
-	PanExempt bool  // true if seller has valid lower-deduction certificate under Section 197
+	GSTTCSBps int64 // 50 bps = 0.5% under Section 52 of CGST Act 2017 (CGST Notification 15/2024 dated 10 July 2024)
+	TDSBps    int64 // 10 bps = 0.1% under Section 393(1) Table Sl. 8(v) of Income-tax Act 2025 / code 1035
+	HasNoPAN  bool  // true if seller has no PAN/Aadhaar; rate defaults to 5.0% (500 bps)
+	PanExempt bool  // true if seller holds valid lower-deduction certificate under Section 197
 }
 
 // DefaultIndiaTaxConfig returns the standard Indian statutory tax settings for e-commerce.
 func DefaultIndiaTaxConfig() TaxConfig {
 	return TaxConfig{
-		GSTTCSBps: 100, // 1.0% GST TCS
-		TDSBps:    10,  // 0.1% TDS under Section 194-O
+		GSTTCSBps: 50, // 0.5% GST TCS per CGST Notification 15/2024
+		TDSBps:    10, // 0.1% TDS under Section 393(1)
+		HasNoPAN:  false,
 		PanExempt: false,
 	}
 }
@@ -59,10 +61,16 @@ func CalculateTaxWithholding(
 		gstTCS = (grossSoR * ledger.AmountPaise(cfg.GSTTCSBps)) / 10000
 	}
 
-	// TDS under 194-O is calculated on gross sales value
+	// TDS under Section 393(1) (formerly Section 194-O) is calculated on gross sales value
 	var tds ledger.AmountPaise
-	if !cfg.PanExempt && cfg.TDSBps > 0 {
-		tds = (orderAmount * ledger.AmountPaise(cfg.TDSBps)) / 10000
+	if !cfg.PanExempt {
+		tdsBps := cfg.TDSBps
+		if cfg.HasNoPAN {
+			tdsBps = 500 // 5.0% without PAN under statutory withholding rules
+		}
+		if tdsBps > 0 {
+			tds = (orderAmount * ledger.AmountPaise(tdsBps)) / 10000
+		}
 	}
 
 	totalTax := gstTCS + tds

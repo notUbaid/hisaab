@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -32,13 +33,16 @@ type OnSettleCallbackEvent struct {
 
 // OutboxRecord represents an entry in the transactional outbox table.
 type OutboxRecord struct {
-	ID          int64           `json:"id"`
-	EventType   OutboxEventType `json:"event_type"`
-	Payload     json.RawMessage `json:"payload"`
-	Status      string          `json:"status"` // pending, processing, done, failed
-	RetryCount  int             `json:"retry_count"`
-	CreatedAt   time.Time       `json:"created_at"`
-	ProcessedAt *time.Time      `json:"processed_at,omitempty"`
+	ID            int64           `json:"id"`
+	EventType     OutboxEventType `json:"event_type"`
+	Payload       json.RawMessage `json:"payload"`
+	Status        string          `json:"status"` // pending, processing, done, failed
+	RetryCount    int             `json:"retry_count"`
+	Attempts      int             `json:"attempts"`
+	NextAttemptAt time.Time       `json:"next_attempt_at"`
+	LockedUntil   *time.Time      `json:"locked_until,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	ProcessedAt   *time.Time      `json:"processed_at,omitempty"`
 }
 
 // WorkerConfig holds the outbox worker configuration.
@@ -46,6 +50,7 @@ type WorkerConfig struct {
 	BatchSize     int
 	PollInterval  time.Duration
 	MaxRetries    int
+	BaseBackoff   time.Duration
 	SigningDomain string
 	SigningKeyID  string
 }
@@ -56,6 +61,7 @@ func DefaultWorkerConfig() WorkerConfig {
 		BatchSize:     50,
 		PollInterval:  1 * time.Second,
 		MaxRetries:    5,
+		BaseBackoff:   1 * time.Second,
 		SigningDomain: "sa.ondc.org",
 		SigningKeyID:  "sa-key-1",
 	}
@@ -84,101 +90,201 @@ func NewOutboxProcessor(cfg WorkerConfig, pool *pgxpool.Pool, signer *auth.Reque
 func (p *OutboxProcessor) EnqueueInMemory(record OutboxRecord) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if record.NextAttemptAt.IsZero() {
+		record.NextAttemptAt = time.Now()
+	}
 	p.inMemoryDB = append(p.inMemoryDB, record)
 }
 
-// DrainInMemory processes all pending records currently in the in-memory queue.
+// DrainInMemory processes all eligible records using two-phase claim and retry with exponential backoff.
 func (p *OutboxProcessor) DrainInMemory(ctx context.Context) (int, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	now := time.Now()
 
-	processed := 0
+	// 1. Phase 1: Claim pending or expired lease records under lock
+	p.mu.Lock()
+	claimedIndices := make([]int, 0)
+	claimedRecords := make([]OutboxRecord, 0)
+
 	for i := range p.inMemoryDB {
-		if p.inMemoryDB[i].Status == "pending" {
-			err := p.processRecord(ctx, &p.inMemoryDB[i])
-			now := time.Now()
-			p.inMemoryDB[i].ProcessedAt = &now
-			if err != nil {
-				p.inMemoryDB[i].RetryCount++
-				if p.inMemoryDB[i].RetryCount >= p.cfg.MaxRetries {
-					p.inMemoryDB[i].Status = "failed"
-				}
-				slog.Error("Failed to process outbox record", "id", p.inMemoryDB[i].ID, "error", err)
-			} else {
-				p.inMemoryDB[i].Status = "done"
-				processed++
+		rec := &p.inMemoryDB[i]
+		isEligiblePending := rec.Status == "pending" && (rec.NextAttemptAt.IsZero() || !rec.NextAttemptAt.After(now))
+		isExpiredProcessing := rec.Status == "processing" && rec.LockedUntil != nil && !rec.LockedUntil.After(now)
+
+		if isEligiblePending || isExpiredProcessing {
+			rec.Status = "processing"
+			lockExpiry := now.Add(30 * time.Second)
+			rec.LockedUntil = &lockExpiry
+			claimedIndices = append(claimedIndices, i)
+			claimedRecords = append(claimedRecords, *rec)
+			if len(claimedIndices) >= p.cfg.BatchSize {
+				break
 			}
 		}
 	}
-	return processed, nil
+	p.mu.Unlock()
+
+	if len(claimedRecords) == 0 {
+		return 0, nil
+	}
+
+	// 2. Phase 2: Perform I/O outside of locks
+	type resultOutcome struct {
+		idx int
+		err error
+	}
+	outcomes := make([]resultOutcome, len(claimedRecords))
+	for j, rec := range claimedRecords {
+		recCopy := rec
+		err := p.processRecord(ctx, &recCopy)
+		outcomes[j] = resultOutcome{idx: claimedIndices[j], err: err}
+	}
+
+	// 3. Phase 3: Update outcomes with exponential backoff or completion
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	processedCount := 0
+	finalTime := time.Now()
+
+	for _, outcome := range outcomes {
+		target := &p.inMemoryDB[outcome.idx]
+		if outcome.err != nil {
+			target.Attempts++
+			target.RetryCount = target.Attempts // sync for backward compatibility
+			target.LockedUntil = nil
+
+			if target.Attempts >= p.cfg.MaxRetries {
+				target.Status = "failed"
+				target.ProcessedAt = &finalTime
+				slog.Error("Outbox record reached max retries, marked as failed (DLQ)",
+					"id", target.ID, "attempts", target.Attempts, "error", outcome.err)
+			} else {
+				// Exponential backoff: baseBackoff * 2^(attempts-1)
+				shift := target.Attempts - 1
+				if shift > 10 {
+					shift = 10
+				}
+				backoff := time.Duration(float64(p.cfg.BaseBackoff) * math.Pow(2, float64(shift)))
+				target.Status = "pending"
+				target.NextAttemptAt = finalTime.Add(backoff)
+				slog.Warn("Outbox record failed, scheduled retry with exponential backoff",
+					"id", target.ID, "attempts", target.Attempts, "next_attempt_in", backoff.String(), "error", outcome.err)
+			}
+		} else {
+			target.Status = "done"
+			target.LockedUntil = nil
+			target.ProcessedAt = &finalTime
+			processedCount++
+		}
+	}
+
+	return processedCount, nil
 }
 
-// DrainBatch pulls pending records using SKIP LOCKED and processes them.
+// DrainBatch pulls pending records using two-phase SKIP LOCKED: claim in a short tx,
+// do I/O outside the tx, and update outcome in a separate tx with exponential backoff.
 func (p *OutboxProcessor) DrainBatch(ctx context.Context) (int, error) {
 	if p.pool == nil {
 		return p.DrainInMemory(ctx)
 	}
 
-	tx, err := p.pool.Begin(ctx)
+	// Phase 1: Claim rows in short transaction
+	claimTx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("outbox.DrainBatch: begin tx failed: %w", err)
+		return 0, fmt.Errorf("outbox.DrainBatch: begin claim tx failed: %w", err)
 	}
 	defer func() {
-		_ = tx.Rollback(ctx)
+		_ = claimTx.Rollback(ctx)
 	}()
 
-	rows, err := tx.Query(ctx, `
-		SELECT id, event_type, payload, status, created_at
-		FROM outbox
-		WHERE status = 'pending'
-		ORDER BY created_at ASC
-		LIMIT $1
-		FOR UPDATE SKIP LOCKED
+	rows, err := claimTx.Query(ctx, `
+		WITH claimed AS (
+			SELECT id
+			FROM outbox
+			WHERE (status = 'pending' AND next_attempt_at <= NOW())
+			   OR (status = 'processing' AND locked_until < NOW())
+			ORDER BY next_attempt_at ASC
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE outbox o
+		SET status = 'processing',
+		    locked_until = NOW() + INTERVAL '30 seconds'
+		FROM claimed
+		WHERE o.id = claimed.id
+		RETURNING o.id, o.event_type, o.payload, o.status, o.attempts, o.created_at
 	`, p.cfg.BatchSize)
 	if err != nil {
-		return 0, fmt.Errorf("outbox.DrainBatch: query failed: %w", err)
+		return 0, fmt.Errorf("outbox.DrainBatch: claim query failed: %w", err)
 	}
 	defer rows.Close()
 
 	records := make([]OutboxRecord, 0)
 	for rows.Next() {
 		var r OutboxRecord
-		if err := rows.Scan(&r.ID, &r.EventType, &r.Payload, &r.Status, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.EventType, &r.Payload, &r.Status, &r.Attempts, &r.CreatedAt); err != nil {
 			return 0, fmt.Errorf("outbox.DrainBatch: scan failed: %w", err)
 		}
 		records = append(records, r)
 	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("outbox.DrainBatch: rows error: %w", err)
+	rows.Close()
+
+	if err := claimTx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("outbox.DrainBatch: commit claim tx failed: %w", err)
 	}
 
 	if len(records) == 0 {
 		return 0, nil
 	}
 
+	// Phase 2: Perform I/O outside database transaction
 	processedCount := 0
 	for _, rec := range records {
 		recCopy := rec
 		procErr := p.processRecord(ctx, &recCopy)
+
+		// Phase 3: Record outcome in separate transaction
 		if procErr != nil {
-			slog.Error("Outbox dispatch failure", "id", rec.ID, "type", rec.EventType, "error", procErr)
-			_, _ = tx.Exec(ctx, `
-				UPDATE outbox
-				SET status = 'failed', processed_at = NOW()
-				WHERE id = $1
-			`, rec.ID)
+			newAttempts := rec.Attempts + 1
+			slog.Error("Outbox dispatch failure", "id", rec.ID, "type", rec.EventType, "attempts", newAttempts, "error", procErr)
+
+			if newAttempts >= p.cfg.MaxRetries {
+				_, _ = p.pool.Exec(ctx, `
+					UPDATE outbox
+					SET status = 'failed',
+					    attempts = $2,
+					    locked_until = NULL,
+					    processed_at = NOW()
+					WHERE id = $1
+				`, rec.ID, newAttempts)
+			} else {
+				shift := newAttempts - 1
+				if shift > 10 {
+					shift = 10
+				}
+				backoffSec := int64(p.cfg.BaseBackoff.Seconds() * math.Pow(2, float64(shift)))
+				if backoffSec < 1 {
+					backoffSec = 1
+				}
+				_, _ = p.pool.Exec(ctx, `
+					UPDATE outbox
+					SET status = 'pending',
+					    attempts = $2,
+					    next_attempt_at = NOW() + ($3 || ' seconds')::interval,
+					    locked_until = NULL
+					WHERE id = $1
+				`, rec.ID, newAttempts, fmt.Sprintf("%d", backoffSec))
+			}
 		} else {
-			_, _ = tx.Exec(ctx, `
+			_, _ = p.pool.Exec(ctx, `
 				UPDATE outbox
-				SET status = 'done', processed_at = NOW()
+				SET status = 'done',
+				    locked_until = NULL,
+				    processed_at = NOW()
 				WHERE id = $1
 			`, rec.ID)
 			processedCount++
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("outbox.DrainBatch: commit failed: %w", err)
 	}
 
 	return processedCount, nil

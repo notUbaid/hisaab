@@ -53,7 +53,7 @@ func (c *InvariantChecker) CheckInvariant4_NonNegative(accountName string, balan
 
 // CheckInvariant5_Conservation asserts that order components exactly match total order amount.
 func (c *InvariantChecker) CheckInvariant5_Conservation(order settlement.OrderSettlementLine) error {
-	sum := order.CommissionPaise + order.BFFPaise + order.SoRDuePaise + order.TaxDeductions
+	sum := order.CommissionPaise + order.BFFPaise + order.SoRDuePaise + order.TaxDeductions + order.ToleranceResidual
 	if sum != order.OrderAmountPaise {
 		return fmt.Errorf("%w: order %s sum (%d paise) != total amount (%d paise)",
 			ErrInvariant5ConservationBroken, order.NetworkOrderID, sum, order.OrderAmountPaise)

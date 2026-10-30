@@ -7,49 +7,56 @@ import (
 	"github.com/ubaid/hisaab/internal/settlement"
 )
 
-// ScenarioDef is the declarative YAML specification for a settlement scenario.
+// ScenarioDef models a declarative, spec-traceable test scenario.
 type ScenarioDef struct {
 	ID          string   `yaml:"id"`
 	Title       string   `yaml:"title"`
-	SpecVersion string   `yaml:"spec_version"`
 	BRDSection  string   `yaml:"brd_section"`
+	SpecVersion string   `yaml:"spec_version"`
 	Given       GivenDef `yaml:"given"`
+	When        WhenDef  `yaml:"when"`
 	Then        ThenDef  `yaml:"then"`
 }
 
-// GivenDef defines initial state, input claims, and policy parameters.
+// GivenDef defines pre-conditions, starting account balances, and policies.
 type GivenDef struct {
-	CollectorAccount      string            `yaml:"collector_account"`
-	CollectorBalancePaise int64             `yaml:"collector_balance_paise"`
-	NPPair                string            `yaml:"np_pair"`
-	SettlementDate        string            `yaml:"settlement_date"`
-	BuyerClaim            *ClaimDef         `yaml:"buyer_claim,omitempty"`
-	SellerClaim           *ClaimDef         `yaml:"seller_claim,omitempty"`
-	PolicyFlags           map[string]any    `yaml:"policy_flags,omitempty"`
+	CollectorAccount      string         `yaml:"collector_account"`
+	CollectorBalancePaise int64          `yaml:"collector_balance_paise"`
+	SettlementDate        string         `yaml:"settlement_date"`
+	NPPair                string         `yaml:"np_pair"`
+	PolicyFlags           map[string]any `yaml:"policy_flags"`
+	BuyerClaim            *ClaimDef      `yaml:"buyer_claim"`
+	SellerClaim           *ClaimDef      `yaml:"seller_claim"`
 }
 
-// ClaimDef represents a party's /settle claim submission.
+// WhenDef defines the settlement action trigger.
+type WhenDef struct {
+	Action string `yaml:"action"` // e.g. "settle_batch"
+}
+
+// ClaimDef models a submitted claim containing multiple order legs.
 type ClaimDef struct {
 	MessageID string     `yaml:"message_id"`
 	Orders    []OrderDef `yaml:"orders"`
 }
 
-// OrderDef represents an individual order in a claim.
+// OrderDef represents an individual order in a claim definition.
 type OrderDef struct {
 	OrderID         string `yaml:"order_id"`
 	AmountPaise     int64  `yaml:"amount_paise"`
 	CommissionPaise int64  `yaml:"commission_paise"`
 	BFFPaise        int64  `yaml:"bff_paise"`
+	SoRDuePaise     int64  `yaml:"sor_due_paise,omitempty"`
 }
 
 // ThenDef defines expected outcomes and invariant verification assertions.
 type ThenDef struct {
 	MatchStatus                string   `yaml:"match_status"`
 	ErrorCode                  string   `yaml:"error_code,omitempty"`
-	MatchedOrdersCount         int      `yaml:"matched_orders_count"`
-	UnmatchedOrdersCount       int      `yaml:"unmatched_orders_count"`
-	NetPayoutPaise             int64    `yaml:"net_payout_paise"`
-	CollectorFinalBalancePaise int64    `yaml:"collector_final_balance_paise"`
+	MatchedOrdersCount         *int     `yaml:"matched_orders_count"`
+	UnmatchedOrdersCount       *int     `yaml:"unmatched_orders_count"`
+	NetPayoutPaise             *int64   `yaml:"net_payout_paise"`
+	CollectorFinalBalancePaise *int64   `yaml:"collector_final_balance_paise"`
 	InvariantsChecked          []string `yaml:"invariants_checked"`
 }
 

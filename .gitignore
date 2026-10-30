@@ -80,3 +80,9 @@ logs/
 
 # ─── CI artifacts ──────────────────────────────────────────────────
 .github/workflows/*.local.yml
+
+# ─── Local / Agent session files ───────────────────────────────────
+.session-checkpoint.md
+.session-notes.md
+.build_tmp/
+.playwright_artifacts/

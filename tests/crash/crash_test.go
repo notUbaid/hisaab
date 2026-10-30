@@ -13,280 +13,283 @@ import (
 	"github.com/ubaid/hisaab/internal/verification"
 )
 
-// In-Memory Simulated State to verify crash recovery atomicity and invariant consistency
-type SimulatedSettlementRunner struct {
-	failpoints *verification.FailpointManager
-	checker    *verification.InvariantChecker
-	journal    []ledger.EntryLine
-	idempStore map[string]string
-	batchState map[string]string
-}
-
-func NewSimulatedSettlementRunner(fp *verification.FailpointManager) *SimulatedSettlementRunner {
-	return &SimulatedSettlementRunner{
-		failpoints: fp,
-		checker:    verification.NewInvariantChecker(),
-		journal:    make([]ledger.EntryLine, 0),
-		idempStore: make(map[string]string),
-		batchState: make(map[string]string),
-	}
-}
-
-// PostJournal simulates an atomic double-entry post with crashpoint checks
-func (r *SimulatedSettlementRunner) PostJournal(ctx context.Context, idempKey string, lines []ledger.EntryLine) error {
-	// Pre-condition: Invariant 1 check
-	if err := r.checker.CheckInvariant1_ZeroSum(lines); err != nil {
-		return err
-	}
-
-	// Invariant 3 check
-	if _, exists := r.idempStore[idempKey]; exists {
-		return nil // Idempotent success without duplicate posting
-	}
-
-	// Simulate Step 1: Debit leg
-	r.failpoints.Trigger(verification.FPAfterDebitLegBeforeCreditLeg)
-
-	// In an atomic transaction, if failure occurs here, rollback guarantees zero lines appended
-	r.journal = append(r.journal, lines...)
-	r.idempStore[idempKey] = "committed"
-
-	// Simulate Step 2: ACK boundary
-	if err := r.failpoints.Trigger(verification.FPAfterCommitBeforeACK); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// 1. FPAfterDebitLegBeforeCreditLeg
+// 1. FPAfterDebitLegBeforeCreditLeg: Mid-posting crash rolls back completely (Atomicity)
 func TestCrashPoint_FPAfterDebitLegBeforeCreditLeg(t *testing.T) {
 	fp := verification.NewFailpointManager()
-	fp.Enable(verification.FPAfterDebitLegBeforeCreditLeg, verification.ActionPanic)
 
-	runner := NewSimulatedSettlementRunner(fp)
+	mem := ledger.NewMemoryLedger()
+	_ = mem.SeedStandardAccounts()
+	_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountAsset, "INR", false)
+
+	// Pre-fund collector account
+	_, err := mem.Post(context.Background(), ledger.PostRequest{
+		IdempotencyKey: "fund-crash-1",
+		CauseType:      ledger.CauseAdjustment,
+		CauseID:        1,
+		Description:    "Fund collector",
+		Lines: []ledger.EntryLine{
+			{AccountName: "ext:nodal_clearing", Direction: ledger.Debit, AmountPaise: 500000},
+			{AccountName: "collector:ondc_settlement", Direction: ledger.Credit, AmountPaise: 500000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Pre-funding failed: %v", err)
+	}
+
+	initialEntriesCount := len(mem.GetEntries())
+
+	// Arm failpoint
+	fp.Enable(verification.FPAfterDebitLegBeforeCreditLeg, verification.ActionError)
+	ctx := ledger.ContextWithFailpoint(context.Background(), fp)
+
 	lines := []ledger.EntryLine{
 		{AccountName: "collector:ondc_settlement", Direction: ledger.Debit, AmountPaise: 50000},
-		{AccountName: "receiver:operative", Direction: ledger.Credit, AmountPaise: 50000},
+		{AccountName: "receiver:ondc_settlement", Direction: ledger.Credit, AmountPaise: 50000},
 	}
 
-	panicked := false
-	func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				panicked = true
-			}
-		}()
-		_ = runner.PostJournal(context.Background(), "idemp-crash-1", lines)
-	}()
-
-	if !panicked {
-		t.Fatal("Expected panic when FPAfterDebitLegBeforeCreditLeg is enabled")
+	req := ledger.PostRequest{
+		IdempotencyKey: "crash-idemp-1",
+		CauseType:      ledger.CauseInstruction,
+		CauseID:        2,
+		Description:    "Test crash mid-tx",
+		Lines:          lines,
 	}
 
-	// Verify atomicity: if crashed before credit leg, journal remains uncommitted
-	if len(runner.journal) != 0 {
-		t.Fatalf("Invariant 1 & 8 violated: partial uncommitted entries found in journal: %d lines", len(runner.journal))
-	}
-}
-
-// 2. FPAfterCommitBeforeACK
-func TestCrashPoint_FPAfterCommitBeforeACK(t *testing.T) {
-	fp := verification.NewFailpointManager()
-	fp.Enable(verification.FPAfterCommitBeforeACK, verification.ActionError)
-
-	runner := NewSimulatedSettlementRunner(fp)
-	lines := []ledger.EntryLine{
-		{AccountName: "collector:ondc_settlement", Direction: ledger.Debit, AmountPaise: 100000},
-		{AccountName: "receiver:operative", Direction: ledger.Credit, AmountPaise: 100000},
-	}
-
-	// First attempt: succeeds commit but returns ACK error due to failpoint
-	err := runner.PostJournal(context.Background(), "idemp-ack-1", lines)
+	// 1. First execution should fail due to injected failpoint
+	_, err = mem.Post(ctx, req)
 	if err == nil || !errors.Is(err, verification.ErrInjectedFault) {
 		t.Fatalf("Expected ErrInjectedFault, got: %v", err)
 	}
 
-	// Commit succeeded
-	if len(runner.journal) != 2 {
-		t.Fatalf("Expected 2 lines committed in journal, got: %d", len(runner.journal))
+	// Verify atomicity on real ledger: ZERO new journal entries committed
+	entries := mem.GetEntries()
+	if len(entries) != initialEntriesCount {
+		t.Fatalf("Atomicity violated: found %d journal entries in ledger after mid-tx crash", len(entries))
 	}
 
-	// Disarm failpoint and retry identical request (idempotent replay)
-	fp.Disable(verification.FPAfterCommitBeforeACK)
-	err = runner.PostJournal(context.Background(), "idemp-ack-1", lines)
+	// Verify invariant audit passes (no corrupted state)
+	if err := mem.AuditInvariants(); err != nil {
+		t.Fatalf("Ledger invariant audit failed after crash: %v", err)
+	}
+
+	// 2. Disarm failpoint and retry identical request (Crash Recovery)
+	fp.Disable(verification.FPAfterDebitLegBeforeCreditLeg)
+	result, err := mem.Post(ctx, req)
 	if err != nil {
-		t.Fatalf("Expected idempotent replay to succeed, got: %v", err)
+		t.Fatalf("Crash recovery retry failed: %v", err)
 	}
 
-	// Verify Invariant 3: No duplicate entries appended
-	if len(runner.journal) != 2 {
-		t.Fatalf("Invariant 3 violated: duplicate journal lines appended on retry: %d", len(runner.journal))
+	if result.LinesCount != 2 {
+		t.Errorf("Expected 2 lines committed on recovery, got %d", result.LinesCount)
+	}
+	if len(mem.GetEntries()) != initialEntriesCount+2 {
+		t.Errorf("Expected %d entries in ledger, got %d", initialEntriesCount+2, len(mem.GetEntries()))
 	}
 }
 
-// 3. FPAfterSubLedgerBeforeNetBatch
+// 2. FPAfterCommitBeforeACK: Crash between commit and ACK response
+func TestCrashPoint_FPAfterCommitBeforeACK(t *testing.T) {
+	fp := verification.NewFailpointManager()
+
+	mem := ledger.NewMemoryLedger()
+	_ = mem.SeedStandardAccounts()
+	_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountAsset, "INR", false)
+
+	// Pre-fund collector account
+	_, err := mem.Post(context.Background(), ledger.PostRequest{
+		IdempotencyKey: "fund-crash-2",
+		CauseType:      ledger.CauseAdjustment,
+		CauseID:        1,
+		Description:    "Fund collector",
+		Lines: []ledger.EntryLine{
+			{AccountName: "ext:nodal_clearing", Direction: ledger.Debit, AmountPaise: 500000},
+			{AccountName: "collector:ondc_settlement", Direction: ledger.Credit, AmountPaise: 500000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Pre-funding failed: %v", err)
+	}
+
+	initialEntriesCount := len(mem.GetEntries())
+
+	fp.Enable(verification.FPAfterCommitBeforeACK, verification.ActionError)
+	ctx := ledger.ContextWithFailpoint(context.Background(), fp)
+
+	lines := []ledger.EntryLine{
+		{AccountName: "collector:ondc_settlement", Direction: ledger.Debit, AmountPaise: 100000},
+		{AccountName: "receiver:ondc_settlement", Direction: ledger.Credit, AmountPaise: 100000},
+	}
+
+	req := ledger.PostRequest{
+		IdempotencyKey: "crash-idemp-ack",
+		CauseType:      ledger.CauseInstruction,
+		CauseID:        2,
+		Description:    "Test commit success but caller receives network drop",
+		Lines:          lines,
+	}
+
+	// 1. Post succeeds internally in ledger, but returns error at ACK boundary
+	_, err = mem.Post(ctx, req)
+	if err == nil || !errors.Is(err, verification.ErrInjectedFault) {
+		t.Fatalf("Expected ErrInjectedFault, got: %v", err)
+	}
+
+	// Entries were committed to storage
+	if len(mem.GetEntries()) != initialEntriesCount+2 {
+		t.Fatalf("Expected %d entries committed before ACK drop, got: %d", initialEntriesCount+2, len(mem.GetEntries()))
+	}
+
+	// 2. Caller retries with identical idempotency key after clearing network fault
+	fp.Disable(verification.FPAfterCommitBeforeACK)
+	resRetry, err := mem.Post(ctx, req)
+	if err != nil {
+		t.Fatalf("Idempotent retry failed: %v", err)
+	}
+
+	if resRetry.IdempotencyKey != "crash-idemp-ack" {
+		t.Errorf("Expected cached idempotency key, got %s", resRetry.IdempotencyKey)
+	}
+
+	// Verify Invariant 3: Exactly-once semantics, NO duplicate lines
+	if len(mem.GetEntries()) != initialEntriesCount+2 {
+		t.Fatalf("Invariant 3 violated: duplicate entries created on retry: %d entries", len(mem.GetEntries()))
+	}
+}
+
+// 3. FPAfterSubLedgerBeforeNetBatch: Crash before net instruction batching
 func TestCrashPoint_FPAfterSubLedgerBeforeNetBatch(t *testing.T) {
 	fp := verification.NewFailpointManager()
 	fp.Enable(verification.FPAfterSubLedgerBeforeNetBatch, verification.ActionError)
 
+	mem := ledger.NewMemoryLedger()
+	_ = mem.SeedStandardAccounts()
+	cal := calendar.New(nil)
 	matcher := settlement.NewMatcher(settlement.DefaultPolicy())
-	tDate := time.Date(2026, 10, 30, 15, 0, 0, 0, calendar.Location())
+
+	orch := settlement.NewOrchestrator(mem, matcher, cal, nil, fp)
+
+	ctx := context.Background()
 
 	buyerClaim := &settlement.SettleClaimPayload{
-		NPPairID: "NP-B-1:NP-S-1",
+		Context:      &settlement.BecknContext{Action: "settle", MessageID: "msg-fp3-buyer"},
+		NPPairID:     "BAP:BPP",
+		SubmittedBy:  "buyer_app",
+		CollectorAcc: "collector:ondc_settlement",
+		ReceiverAcc:  "receiver:ondc_settlement",
 		Orders: []settlement.OrderSettlementLine{
-			{NetworkOrderID: "ORD-M5-01", OrderAmountPaise: 50000, CommissionPaise: 1500, BFFPaise: 500, SoRDuePaise: 48000},
+			{NetworkOrderID: "ORD-FP3", OrderAmountPaise: 50000, CommissionPaise: 1500, BFFPaise: 500, SoRDuePaise: 48000},
 		},
 	}
+	_, _ = orch.SubmitClaim(ctx, buyerClaim)
+
 	sellerClaim := &settlement.SettleClaimPayload{
-		NPPairID: "NP-B-1:NP-S-1",
+		Context:      &settlement.BecknContext{Action: "settle", MessageID: "msg-fp3-seller"},
+		NPPairID:     "BAP:BPP",
+		SubmittedBy:  "seller_app",
+		CollectorAcc: "collector:ondc_settlement",
+		ReceiverAcc:  "receiver:ondc_settlement",
 		Orders: []settlement.OrderSettlementLine{
-			{NetworkOrderID: "ORD-M5-01", OrderAmountPaise: 50000, CommissionPaise: 1500, BFFPaise: 500, SoRDuePaise: 48000},
+			{NetworkOrderID: "ORD-FP3", OrderAmountPaise: 50000, CommissionPaise: 1500, BFFPaise: 500, SoRDuePaise: 48000},
 		},
 	}
 
-	res, err := matcher.MatchAndNet("BATCH-FP3", tDate, buyerClaim, sellerClaim, 100000)
-	if err != nil {
-		t.Fatalf("Matching failed: %v", err)
-	}
-
-	// Trigger failpoint after subledger computation
-	err = fp.Trigger(verification.FPAfterSubLedgerBeforeNetBatch)
+	// Fault injected before matching/batching
+	_, err := orch.SubmitClaim(ctx, sellerClaim)
 	if err == nil {
-		t.Fatal("Expected error at FPAfterSubLedgerBeforeNetBatch")
+		t.Fatal("Expected error at FPAfterSubLedgerBeforeNetBatch, got nil")
 	}
 
-	// Verify Invariant 13 tie-out still holds on sub-ledger result
-	checker := verification.NewInvariantChecker()
-	if err := checker.CheckInvariant13_GrossNetTieOut(res); err != nil {
-		t.Fatalf("Invariant 13 broken on sub-ledger: %v", err)
+	// Verify no orphaned batches or outbox items
+	if len(orch.ListBatches()) != 0 {
+		t.Errorf("Expected 0 batches created after mid-flight crash, got %d", len(orch.ListBatches()))
+	}
+	if len(orch.GetPendingOutbox()) != 0 {
+		t.Errorf("Expected 0 outbox items, got %d", len(orch.GetPendingOutbox()))
 	}
 }
 
-// 4. FPAfterInstructionBeforeBankSend
-func TestCrashPoint_FPAfterInstructionBeforeBankSend(t *testing.T) {
-	fp := verification.NewFailpointManager()
-	fp.Enable(verification.FPAfterInstructionBeforeBankSend, verification.ActionError)
+// 4. FPMidBatchDatabaseSever: Disconnection during active query
+func TestCrashPoint_FPMidBatchDatabaseSever(t *testing.T) {
+	mem := ledger.NewMemoryLedger()
+	_ = mem.SeedStandardAccounts()
 
-	// Simulate outbox record creation
-	outboxStatus := "pending"
-	instructionCreated := true
+	// Cancel context to simulate database connection sever
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Sever immediately
 
-	err := fp.Trigger(verification.FPAfterInstructionBeforeBankSend)
-	if err == nil {
-		t.Fatal("Expected failpoint error before bank send")
+	req := ledger.PostRequest{
+		IdempotencyKey: "sever-test",
+		CauseType:      ledger.CauseInstruction,
+		CauseID:        1,
+		Description:    "Severed connection",
+		Lines: []ledger.EntryLine{
+			{AccountName: "collector:ondc_settlement", Direction: ledger.Debit, AmountPaise: 10000},
+			{AccountName: "receiver:ondc_settlement", Direction: ledger.Credit, AmountPaise: 10000},
+		},
 	}
 
-	// Outbox worker recovery: status must remain pending, ready for safe retry
-	if outboxStatus != "pending" || !instructionCreated {
-		t.Fatalf("Recovery failed: outbox entry marked invalidly: %s", outboxStatus)
+	_, err := mem.Post(ctx, req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Expected context.Canceled on connection sever, got: %v", err)
+	}
+
+	if len(mem.GetEntries()) != 0 {
+		t.Fatalf("Expected 0 entries committed on severed connection, got %d", len(mem.GetEntries()))
 	}
 }
 
-// 5. FPAfterBankSendBeforeCallback
-func TestCrashPoint_FPAfterBankSendBeforeCallback(t *testing.T) {
-	fp := verification.NewFailpointManager()
-	fp.Enable(verification.FPAfterBankSendBeforeCallback, verification.ActionError)
-
-	// Bank send succeeds, but callback fails to arrive immediately
-	_ = fp.Trigger(verification.FPAfterBankSendBeforeCallback)
-
+// 5. FPDuplicateCreditArrival: Duplicate bank credit arrival in recon
+func TestCrashPoint_FPDuplicateCreditArrival(t *testing.T) {
 	cal := calendar.New(nil)
-	reconEngine := recon.NewEngine(cal)
-	asOf := time.Date(2026, 10, 30, 18, 0, 0, 0, calendar.Location())
+	reconEng := recon.NewEngine(cal)
 
 	orderBook := []recon.OrderBookLine{
-		{
-			NetworkOrderID: "ORD-BK-1",
-			AmountPaise:    25000,
-			Commission:     1000,
-			BFF:            500,
-			CreatedAt:      asOf.Add(-2 * time.Hour),
-		},
+		{NetworkOrderID: "ORD-DUP", AmountPaise: 10000, CreatedAt: time.Date(2026, 10, 30, 0, 0, 0, 0, calendar.Location())},
 	}
 	saReport := []recon.SAReportLine{
-		{
-			BatchID:        "B-BK-1",
-			NetworkOrderID: "ORD-BK-1",
-			SettledAmount:  25000,
-			Status:         "settled",
-			SettledAt:      asOf.Add(-1 * time.Hour),
-		},
+		{NetworkOrderID: "ORD-DUP", SettledAmount: 10000, BatchID: "BATCH-DUP", SettledAt: time.Date(2026, 10, 30, 0, 0, 0, 0, calendar.Location())},
 	}
+
+	// Two identical bank credits for the same order (simulating duplicate credit notification crash)
 	bankStmt := []recon.BankStatementLine{
-		{
-			ReferenceID: "ORD-BK-1",
-			UTR:         "UTR987654321",
-			Direction:   ledger.Credit,
-			AmountPaise: 25000,
-			ValueDate:   asOf,
-		},
+		{ReferenceID: "ORD-DUP", UTR: "UTR-1", Direction: ledger.Credit, AmountPaise: 10000, ValueDate: time.Date(2026, 10, 30, 0, 0, 0, 0, calendar.Location())},
+		{ReferenceID: "ORD-DUP", UTR: "UTR-1", Direction: ledger.Credit, AmountPaise: 10000, ValueDate: time.Date(2026, 10, 30, 0, 0, 0, 0, calendar.Location())},
 	}
 
-	reconRes := reconEngine.Reconcile(orderBook, saReport, bankStmt, asOf)
+	res := reconEng.Reconcile(orderBook, saReport, bankStmt, time.Date(2026, 10, 30, 15, 0, 0, 0, calendar.Location()))
 
-	if reconRes.MatchedCount != 1 || reconRes.TotalExceptions != 0 {
-		t.Fatalf("Expected recon to tie out bank statement to order book, got %d matched, %d exceptions",
-			reconRes.MatchedCount, reconRes.TotalExceptions)
+	// Must flag duplicate credit as an exception instead of double-crediting
+	if len(res.Exceptions) != 1 {
+		t.Fatalf("Expected 1 recon exception for duplicate bank credit, got %d", len(res.Exceptions))
+	}
+	if res.Exceptions[0].Class != recon.ExceptionDuplicateCredit {
+		t.Errorf("Expected exception class DUPLICATE_CREDIT, got %s", res.Exceptions[0].Class)
 	}
 }
 
-// 6. FPMidBatchDatabaseSever
-func TestCrashPoint_FPMidBatchDatabaseSever(t *testing.T) {
-	fp := verification.NewFailpointManager()
-	fp.Enable(verification.FPMidBatchDatabaseSever, verification.ActionPanic)
-
-	panicked := false
-	func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				panicked = true
-			}
-		}()
-		_ = fp.Trigger(verification.FPMidBatchDatabaseSever)
-	}()
-
-	if !panicked {
-		t.Fatal("Expected panic on database sever")
-	}
-}
-
-// 7. FPDuplicateCreditArrival
-func TestCrashPoint_FPDuplicateCreditArrival(t *testing.T) {
-	checker := verification.NewInvariantChecker()
-
-	// Initial settled state
-	currentState := "settled"
-
-	// Duplicate callback arrives with "settled"
-	if err := checker.CheckInvariant14_TerminalCallback(currentState, "settled"); err != nil {
-		t.Fatalf("Invariant 14 check failed for duplicate settled callback: %v", err)
-	}
-
-	// Duplicate callback attempting to alter to "failed"
-	if err := checker.CheckInvariant14_TerminalCallback(currentState, "failed"); err == nil {
-		t.Fatal("Invariant 14 failed: expected error when terminal state is mutated")
-	}
-}
-
-// 8. FPClockSkewMidnight
+// 6. FPClockSkewMidnight: Deterministic handling across cut-off boundary with timing skew
 func TestCrashPoint_FPClockSkewMidnight(t *testing.T) {
 	cal := calendar.New(nil)
+	cal.SetCutOffTime(23, 59, 59)
 
-	// Time right at 23:59:59 IST on Friday October 30, 2026
-	tBefore := time.Date(2026, 10, 30, 23, 59, 59, 0, calendar.Location())
-	d1 := cal.SettlementCutOffDetermined(tBefore)
-
-	// Time right at 00:00:01 IST on Saturday October 31, 2026
-	// Note: October 31, 2026 is 5th Saturday (not 2nd/4th), so it is a working banking day in India!
-	tAfter := time.Date(2026, 10, 31, 0, 0, 1, 0, calendar.Location())
-	d2 := cal.SettlementCutOffDetermined(tAfter)
-
-	if d1.Format("2006-01-02") != "2026-10-30" {
-		t.Errorf("Expected settlement date 2026-10-30, got: %s", d1.Format("2006-01-02"))
+	loc := calendar.Location()
+	// T - 10ms (just before cut-off): assigned to current day
+	tBefore := time.Date(2026, 10, 28, 23, 59, 58, 990000000, loc)
+	resBefore, err := cal.SettlementCutOff(tBefore)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
-	if d2.Format("2006-01-02") != "2026-10-31" {
-		t.Errorf("Expected settlement date 2026-10-31, got: %s", d2.Format("2006-01-02"))
+	if resBefore.Format("2006-01-02") != "2026-10-28" {
+		t.Errorf("Expected 2026-10-28, got %s", resBefore.Format("2006-01-02"))
+	}
+
+	// T + 10ms (just after cut-off): assigned to next business day
+	tAfter := time.Date(2026, 10, 28, 23, 59, 59, 10000000, loc)
+	resAfter, err := cal.SettlementCutOff(tAfter)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if resAfter.Format("2006-01-02") != "2026-10-29" {
+		t.Errorf("Expected 2026-10-29, got %s", resAfter.Format("2006-01-02"))
 	}
 }

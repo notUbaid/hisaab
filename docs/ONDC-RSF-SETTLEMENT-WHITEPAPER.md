@@ -7,7 +7,7 @@
 
 ---
 
-### 1. Executive Summary: The ₹4.8 Crore Reconciliation Dilemma
+### 1. Executive Summary: The Decentralized Settlement Reconciliation Challenge
 
 The Open Network for Digital Commerce (ONDC) represents an unprecedented leap in unbundling e-commerce: unbundling buyer discovery (Buyer App / BAP), catalog management and merchant operations (Seller App / BPP), and order delivery (Logistics Service Provider / LSP).
 
@@ -18,13 +18,13 @@ In a centralized platform (e.g. Amazon or Flipkart), a single closed database de
 #### The Problem: Syntax Valid $\neq$ Financially Correct
 The ONDC Workbench tests whether Beckn JSON payloads conform to schema schemas and cryptographic signatures. **It does not test whether the money is correct.**
 
-During high-volume network pilots in Q2 2024, network participants reported acute reconciliation anomalies totaling over ₹4.8 crore in un-reconciled breaks across four distinct failure modes:
-1. **Float Evaporation via Rounding**: Independent computing of GST TCS (1%), Income Tax TDS (0.1%), Buyer Finder Fees (BFF), and merchant commissions with floating-point math created 1-to-3 paise rounding mismatches per order. Across 500,000 daily transactions, this evaporated ₹15,000/day into nodal suspense accounts.
-2. **Nodal Account Deficits via Reversal Overdrafts**: When a customer returned goods (EC-16), a refund `/settle` was dispatched to the Settlement Agency. If the merchant had already withdrawn their operative balance, the naive settlement debit overdrafted the nodal pool, putting the Settlement Agency in breach of RBI guidelines.
-3. **Deadlocks in Out-of-Order Counterpart Claims**: Buyer Apps and Seller Apps run on independent clock sources and batch cut-offs. Naive $O(N \cdot M)$ nested matching loops created database row-lock contention and deadlocks during concurrent batch evaluations.
-4. **Phantom Settlement on Network Dropouts**: SAs generated net NEFT/RTGS payment instructions to banks, crashed before committing state to disk, and replayed identical batches upon reboot, double-paying beneficiary merchants.
+In high-volume decentralized multi-party commerce, network participants face acute reconciliation challenges across four distinct failure modes:
+1. **Float Evaporation via Rounding**: Independent computing of GST TCS (0.5%), Income Tax TDS (0.1%), Buyer Finder Fees (BFF), and merchant commissions with floating-point math creates 1-to-3 paise rounding mismatches per order, leaking money into suspense accounts.
+2. **Nodal Account Deficits via Reversal Overdrafts**: When a customer returns goods (EC-16), a refund `/settle` is dispatched to the Settlement Agency. If the merchant has already withdrawn their operative balance, a naive settlement debit overdrafts the nodal pool, putting the Settlement Agency in breach of RBI guidelines.
+3. **Deadlocks in Out-of-Order Counterpart Claims**: Buyer Apps and Seller Apps run on independent clock sources and batch cut-offs. Naive $O(N \cdot M)$ nested matching loops create database row-lock contention and deadlocks during concurrent batch evaluations.
+4. **Phantom Settlement on Network Dropouts**: SAs generate net payment instructions to banks, crash before committing state to disk, and replay identical batches upon reboot, double-paying beneficiary merchants.
 
-**Hisaab (हिसाब)** was engineered to solve this dilemma. It is an executable money-correctness engine and settlement simulation laboratory that elevates financial rules from procedural code to **15 mathematically auditable state invariants**.
+**Hisaab (हिसाब)** was engineered to solve this dilemma. It is an executable money-correctness engine and settlement simulation laboratory that elevates financial rules from procedural code to **formal mathematically auditable state invariants**.
 
 ---
 

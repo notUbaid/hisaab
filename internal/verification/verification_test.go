@@ -14,14 +14,14 @@ func TestFailpointManager_ErrorInjection(t *testing.T) {
 	mgr := verification.NewFailpointManager()
 
 	// Disarmed failpoint -> no error
-	if err := mgr.Trigger(verification.FPAfterCommitBeforeACK); err != nil {
+	if err := mgr.Trigger(string(verification.FPAfterCommitBeforeACK)); err != nil {
 		t.Fatalf("Expected nil on disarmed failpoint, got: %v", err)
 	}
 
 	// Arm failpoint with error
 	mgr.Enable(verification.FPAfterCommitBeforeACK, verification.ActionError)
 
-	err := mgr.Trigger(verification.FPAfterCommitBeforeACK)
+	err := mgr.Trigger(string(verification.FPAfterCommitBeforeACK))
 	if err == nil || !errors.Is(err, verification.ErrInjectedFault) {
 		t.Fatalf("Expected ErrInjectedFault, got: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestFailpointManager_ErrorInjection(t *testing.T) {
 
 	// Disarm and verify hit
 	mgr.Disable(verification.FPAfterCommitBeforeACK)
-	if err := mgr.Trigger(verification.FPAfterCommitBeforeACK); err != nil {
+	if err := mgr.Trigger(string(verification.FPAfterCommitBeforeACK)); err != nil {
 		t.Fatalf("Expected nil after disable, got: %v", err)
 	}
 }
@@ -48,7 +48,7 @@ func TestFailpointManager_PanicInjection(t *testing.T) {
 		}
 	}()
 
-	_ = mgr.Trigger(verification.FPAfterDebitLegBeforeCreditLeg)
+	_ = mgr.Trigger(string(verification.FPAfterDebitLegBeforeCreditLeg))
 }
 
 func TestInvariantChecker_Invariant1_ZeroSum(t *testing.T) {

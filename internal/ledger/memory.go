@@ -93,6 +93,8 @@ func (m *MemoryLedger) SeedStandardAccounts() error {
 		{"ext:nodal_clearing", AccountExternal, false},
 		{"fees:ondc_network", AccountIncome, false},
 		{"fees:withholding_tax", AccountLiability, false},
+		{"sa:suspense", AccountAsset, false},
+		{"sa:tolerance_adjustment", AccountAsset, false},
 	}
 
 	for _, sa := range standardAccounts {
@@ -115,6 +117,11 @@ func (m *MemoryLedger) GetAccount(name string) (Account, bool) {
 // GetBalance calculates the net balance for a given account in integer paise.
 // Net balance = sum(credit entries) - sum(debit entries).
 func (m *MemoryLedger) GetBalance(accountName string) (AmountPaise, error) {
+	return m.Balance(context.Background(), accountName)
+}
+
+// Balance implements the unified Engine interface for MemoryLedger.
+func (m *MemoryLedger) Balance(ctx context.Context, accountName string) (AmountPaise, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -147,9 +154,10 @@ func (m *MemoryLedger) Post(ctx context.Context, req PostRequest) (*PostResult, 
 		return nil, fmt.Errorf("ledger.MemoryLedger.Post: validation failed: %w", err)
 	}
 
-	reqHash := req.RequestHash
-	if reqHash == "" {
-		reqHash = ComputeRequestHash(req)
+	// Compute canonical request hash internally (B5)
+	reqHash := ComputeRequestHash(req)
+	if req.RequestHash != "" && req.RequestHash != reqHash {
+		return nil, fmt.Errorf("%w: caller supplied hash mismatch", ErrDuplicateIdempotency)
 	}
 
 	m.mu.Lock()
@@ -239,6 +247,11 @@ func (m *MemoryLedger) Post(ctx context.Context, req PostRequest) (*PostResult, 
 	}
 	m.transactions = append(m.transactions, tx)
 
+	// Failpoint hook: before recording journal entry lines (simulating mid-tx interruption)
+	if err := TriggerFailpoint(ctx, "after_debit_before_credit"); err != nil {
+		return nil, err
+	}
+
 	// 7. Record entries
 	for _, line := range req.Lines {
 		entryID := m.nextEntryID
@@ -275,6 +288,11 @@ func (m *MemoryLedger) Post(ctx context.Context, req PostRequest) (*PostResult, 
 			Response:    respBytes,
 			CreatedAt:   postedAt,
 		}
+	}
+
+	// Failpoint hook: after commit before returning ACK to caller
+	if err := TriggerFailpoint(ctx, "after_commit_before_ack"); err != nil {
+		return nil, err
 	}
 
 	return result, nil

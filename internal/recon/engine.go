@@ -41,7 +41,7 @@ func (e *Engine) calculateBusinessDaysBetween(from, to time.Time) int {
 
 	for curr.Before(target) {
 		curr = curr.AddDate(0, 0, 1)
-		isHoliday, _ := e.cal.IsBankHoliday(curr)
+		isHoliday, _, _ := e.cal.IsBankHoliday(curr)
 		if !isHoliday {
 			days++
 		}
@@ -65,12 +65,42 @@ func (e *Engine) Reconcile(
 
 	saMap := make(map[string]SAReportLine)
 	for _, sa := range saReport {
+		if _, exists := saMap[sa.NetworkOrderID]; exists {
+			exc := ReconException{
+				ID:             generateID("EXC-DUP-SA"),
+				Class:          ExceptionDuplicateCredit,
+				NetworkOrderID: sa.NetworkOrderID,
+				ExpectedPaise:  0,
+				ActualPaise:    sa.SettledAmount,
+				AgeingDays:     0,
+				Status:         ReconStatusOpen,
+				Details:        fmt.Sprintf("Duplicate settlement advice line observed for order %s", sa.NetworkOrderID),
+				DetectedAt:     asOf,
+			}
+			result.Exceptions = append(result.Exceptions, exc)
+			result.ExceptionsByClass[ExceptionDuplicateCredit]++
+		}
 		saMap[sa.NetworkOrderID] = sa
 	}
 
 	bankCreditMap := make(map[string]BankStatementLine)
 	for _, b := range bankStatement {
 		if b.Direction == ledger.Credit {
+			if _, exists := bankCreditMap[b.ReferenceID]; exists {
+				exc := ReconException{
+					ID:             generateID("EXC-DUP-CREDIT"),
+					Class:          ExceptionDuplicateCredit,
+					NetworkOrderID: b.ReferenceID,
+					ExpectedPaise:  0,
+					ActualPaise:    b.AmountPaise,
+					AgeingDays:     0,
+					Status:         ReconStatusOpen,
+					Details:        fmt.Sprintf("Duplicate bank credit line observed for reference %s (UTR %s)", b.ReferenceID, b.UTR),
+					DetectedAt:     asOf,
+				}
+				result.Exceptions = append(result.Exceptions, exc)
+				result.ExceptionsByClass[ExceptionDuplicateCredit]++
+			}
 			bankCreditMap[b.ReferenceID] = b
 		}
 	}

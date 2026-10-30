@@ -52,13 +52,14 @@ type AckResponse struct {
 
 // OrderSettlementLine represents an individual order claim submitted within /settle.
 type OrderSettlementLine struct {
-	NetworkOrderID   string             `json:"network_order_id"`
-	OrderAmountPaise ledger.AmountPaise `json:"order_amount_paise"`
-	CommissionPaise  ledger.AmountPaise `json:"commission_paise"`
-	BFFPaise         ledger.AmountPaise `json:"bff_paise"`
-	SoRDuePaise      ledger.AmountPaise `json:"sor_due_paise"`
-	TaxDeductions    ledger.AmountPaise `json:"tax_deductions_paise"`
-	SettlementDate   time.Time          `json:"settlement_date"`
+	NetworkOrderID    string             `json:"network_order_id"`
+	OrderAmountPaise  ledger.AmountPaise `json:"order_amount_paise"`
+	CommissionPaise   ledger.AmountPaise `json:"commission_paise"`
+	BFFPaise          ledger.AmountPaise `json:"bff_paise"`
+	SoRDuePaise       ledger.AmountPaise `json:"sor_due_paise"`
+	TaxDeductions     ledger.AmountPaise `json:"tax_deductions_paise"`
+	ToleranceResidual ledger.AmountPaise `json:"tolerance_residual_paise,omitempty"`
+	SettlementDate    time.Time          `json:"settlement_date"`
 }
 
 // SettleClaimPayload represents the claim payload submitted by a Buyer App or Seller App.
@@ -109,11 +110,19 @@ type BatchSettlementResult struct {
 	TotalMatched     ledger.AmountPaise `json:"total_matched_paise"`
 	TotalCommission  ledger.AmountPaise `json:"total_commission_paise"`
 	TotalSoRDue      ledger.AmountPaise `json:"total_sor_due_paise"`
-	TotalBFF         ledger.AmountPaise `json:"total_bff_paise"`
-	MatchedOrders    []MatchedOrder     `json:"matched_orders"`
+	TotalBFF               ledger.AmountPaise `json:"total_bff_paise"`
+	ToleranceResidualPaise ledger.AmountPaise `json:"tolerance_residual_paise,omitempty"`
+	MatchedOrders          []MatchedOrder     `json:"matched_orders"`
 	UnmatchedOrders  []MatchedOrder     `json:"unmatched_orders"`
 	Instructions     []NetInstruction   `json:"instructions"`
 	BalancePassed    bool               `json:"balance_passed"`
 	AvailableBalance ledger.AmountPaise `json:"available_balance_paise"`
 	ErrorCode        string             `json:"error_code,omitempty"`
+}
+
+// OnSettleCallbackPayload models the inbound /on_settle Beckn callback structure.
+type OnSettleCallbackPayload struct {
+	BatchID        string `json:"batch_id"`
+	SettlementDate string `json:"settlement_date"`
+	Status         string `json:"status"` // SETTLED, FAILED, PARTIAL
 }

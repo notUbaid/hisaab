@@ -1,6 +1,7 @@
 package verification
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -11,14 +12,14 @@ import (
 type FailpointName string
 
 const (
-	FPAfterDebitLegBeforeCreditLeg     FailpointName = "after_debit_before_credit"
-	FPAfterCommitBeforeACK             FailpointName = "after_commit_before_ack"
-	FPAfterSubLedgerBeforeNetBatch     FailpointName = "after_subledger_before_net"
-	FPAfterInstructionBeforeBankSend   FailpointName = "after_instruction_before_bank_send"
-	FPAfterBankSendBeforeCallback      FailpointName = "after_bank_send_before_callback"
-	FPMidBatchDatabaseSever            FailpointName = "mid_batch_database_sever"
-	FPDuplicateCreditArrival           FailpointName = "duplicate_credit_arrival"
-	FPClockSkewMidnight                FailpointName = "clock_skew_midnight"
+	FPAfterDebitLegBeforeCreditLeg   FailpointName = "after_debit_before_credit"
+	FPAfterCommitBeforeACK           FailpointName = "after_commit_before_ack"
+	FPAfterSubLedgerBeforeNetBatch   FailpointName = "after_subledger_before_net"
+	FPAfterInstructionBeforeBankSend FailpointName = "after_instruction_before_bank_send"
+	FPAfterBankSendBeforeCallback    FailpointName = "after_bank_send_before_callback"
+	FPMidBatchDatabaseSever          FailpointName = "mid_batch_database_sever"
+	FPDuplicateCreditArrival         FailpointName = "duplicate_credit_arrival"
+	FPClockSkewMidnight              FailpointName = "clock_skew_midnight"
 )
 
 // FailAction specifies the failure behavior to inject.
@@ -90,11 +91,12 @@ func (m *FailpointManager) HitCount(name FailpointName) int {
 }
 
 // Trigger evaluates whether an active failpoint should inject a fault at this execution point.
-func (m *FailpointManager) Trigger(name FailpointName) error {
+func (m *FailpointManager) Trigger(name string) error {
+	fpName := FailpointName(name)
 	m.mu.Lock()
-	m.hitCounts[name]++
-	action, armed := m.failpoints[name]
-	delay := m.delays[name]
+	m.hitCounts[fpName]++
+	action, armed := m.failpoints[fpName]
+	delay := m.delays[fpName]
 	m.mu.Unlock()
 
 	if !armed {
@@ -114,4 +116,22 @@ func (m *FailpointManager) Trigger(name FailpointName) error {
 	default:
 		return nil
 	}
+}
+
+type failpointContextKey struct{}
+
+// WithFailpoints attaches a FailpointManager to context.
+func WithFailpoints(ctx context.Context, fp *FailpointManager) context.Context {
+	return context.WithValue(ctx, failpointContextKey{}, fp)
+}
+
+// TriggerContext triggers the named failpoint if attached to ctx.
+func TriggerContext(ctx context.Context, name FailpointName) error {
+	if ctx == nil {
+		return nil
+	}
+	if fp, ok := ctx.Value(failpointContextKey{}).(*FailpointManager); ok && fp != nil {
+		return fp.Trigger(string(name))
+	}
+	return nil
 }

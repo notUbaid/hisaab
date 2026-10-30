@@ -1,0 +1,40 @@
+id: EC-21
+title: "Order amount difference within tolerance (1 paise tolerance adjustment posted)"
+spec_version: "RSF-2.0-BRD-2024-08-02"
+brd_section: "Section 4.4, Case 21"
+
+given:
+  collector_account: "collector:ondc_settlement"
+  collector_balance_paise: 5000000
+  np_pair: "NP-BUYER-01:NP-SELLER-01"
+  settlement_date: "2026-10-30"
+  policy_flags:
+    amount_tolerance_paise: 2 # 2 paise tolerance
+  buyer_claim:
+    message_id: "msg-buyer-ec21-001"
+    orders:
+      - order_id: "ORD-TOL-01"
+        amount_paise: 100001 # 1 paise variance (Buyer collected 1 paise more)
+        commission_paise: 3000
+        bff_paise: 1000
+        sor_due_paise: 96001
+  seller_claim:
+    message_id: "msg-seller-ec21-001"
+    orders:
+      - order_id: "ORD-TOL-01"
+        amount_paise: 100000
+        commission_paise: 3000
+        bff_paise: 1000
+        sor_due_paise: 96000
+
+then:
+  match_status: "MATCHED"
+  matched_orders_count: 1
+  unmatched_orders_count: 0
+  net_payout_paise: 99001 # 99,000 to receiver + 1 to sa:tolerance_adjustment
+  collector_final_balance_paise: 4900999 # 5000000 - 99001
+  invariants_checked:
+    - Invariant1_ZeroSum
+    - Invariant4_NonNegativeConstrainedBalance
+    - Invariant5_OrderConservation
+    - Invariant13_GrossNetTieOut

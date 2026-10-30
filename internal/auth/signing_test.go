@@ -119,3 +119,88 @@ func TestRequestSigner_UnknownSubscriber_Fails(t *testing.T) {
 		t.Fatal("Expected error for unknown subscriber key, got nil")
 	}
 }
+
+func TestRequestSigner_Blake512_NoDigestHeader_Success(t *testing.T) {
+	pub, priv, err := auth.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	registry := auth.NewMemoryKeyRegistry()
+	registry.RegisterKey("np.buyer.com", "key-001", pub)
+
+	signer := auth.NewRequestSigner("np.buyer.com", "key-001", priv, registry)
+
+	body := []byte(`{"context":{"action":"settle","message_id":"msg-blake512"}}`)
+	_, authHeader, err := signer.SignRequest(body, time.Now())
+	if err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	// ONDC requests often carry digest only inside Authorization header
+	req := httptest.NewRequest(http.MethodPost, "/settle", bytes.NewReader(body))
+	req.Header.Set("Authorization", authHeader)
+
+	if err := signer.VerifyRequest(req, body); err != nil {
+		t.Fatalf("VerifyRequest failed with ONDC Blake512 without Digest header: %v", err)
+	}
+}
+
+func TestRequestSigner_ReplayDetection_Fails(t *testing.T) {
+	pub, priv, err := auth.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	registry := auth.NewMemoryKeyRegistry()
+	registry.RegisterKey("np.buyer.com", "key-001", pub)
+
+	signer := auth.NewRequestSigner("np.buyer.com", "key-001", priv, registry)
+
+	body := []byte(`{"context":{"action":"settle","message_id":"msg-replay"}}`)
+	_, authHeader, err := signer.SignRequest(body, time.Now())
+	if err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+
+	req1 := httptest.NewRequest(http.MethodPost, "/settle", bytes.NewReader(body))
+	req1.Header.Set("Authorization", authHeader)
+
+	if err := signer.VerifyRequest(req1, body); err != nil {
+		t.Fatalf("First request should succeed, got: %v", err)
+	}
+
+	// Replay identical request
+	req2 := httptest.NewRequest(http.MethodPost, "/settle", bytes.NewReader(body))
+	req2.Header.Set("Authorization", authHeader)
+
+	err = signer.VerifyRequest(req2, body)
+	if err == nil {
+		t.Fatal("Expected ErrSignatureReplayed for duplicate replayed signature, got nil")
+	}
+}
+
+func TestRequestSigner_PrematureAndTTLBounds(t *testing.T) {
+	pub, priv, err := auth.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	registry := auth.NewMemoryKeyRegistry()
+	registry.RegisterKey("np.buyer.com", "key-001", pub)
+
+	signer := auth.NewRequestSigner("np.buyer.com", "key-001", priv, registry)
+	body := []byte(`{"context":{"action":"settle"}}`)
+
+	// 1. Premature (created 10 minutes in the future)
+	_, authHeaderPremature, err := signer.SignRequest(body, time.Now().Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("SignRequest failed: %v", err)
+	}
+	reqPremature := httptest.NewRequest(http.MethodPost, "/settle", bytes.NewReader(body))
+	reqPremature.Header.Set("Authorization", authHeaderPremature)
+	if err := signer.VerifyRequest(reqPremature, body); err == nil {
+		t.Fatal("Expected error for premature signature created in future, got nil")
+	}
+}
+
