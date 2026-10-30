@@ -48,7 +48,8 @@ jobs:
         env:
           PGPASSWORD: hisaab_dev_password
         run: |
-          psql -h localhost -U hisaab -d hisaab -f db/migrations/00001_init.sql
+          sed -e '/-- goose Down/,$d' db/migrations/00001_init.sql | psql -h localhost -U hisaab -d hisaab
+          psql -h localhost -U hisaab -d hisaab -c "SELECT count(*) FROM accounts;"
 
       - name: "Phase 3.1: Double-Entry Core Ledger & Live PostgreSQL Conformance"
         env:
