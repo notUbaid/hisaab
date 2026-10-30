@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import MoneyCell, { formatIndianNumbering } from "@/components/MoneyCell";
 import { SCENARIOS_DATA } from "@/lib/scenarioData";
+import { WireBatchModal } from "@/components/WireBatchModal";
 
 export default function ExecutiveOverviewPage() {
   const [timeLeft, setTimeLeft] = useState<{ hours: number; minutes: number; seconds: number }>({
@@ -27,6 +28,7 @@ export default function ExecutiveOverviewPage() {
   const [isSimulating, setIsSimulating] = useState(false);
   const [simMessage, setSimMessage] = useState<string | null>(null);
   const [isSimError, setIsSimError] = useState(false);
+  const [isWireModalOpen, setIsWireModalOpen] = useState(false);
 
   // Live countdown to 17:00:00 IST cutoff
   useEffect(() => {
@@ -161,7 +163,10 @@ export default function ExecutiveOverviewPage() {
       </div>
 
       {/* ── Statutory RBI Holiday Banner ── */}
-      <div className="p-3 rounded-lg bg-obsidian-850 border border-amber-500/20 flex items-center justify-between text-xs font-mono">
+      <div
+        onClick={() => setIsWireModalOpen(true)}
+        className="p-3 rounded-lg bg-obsidian-850 border border-amber-500/20 flex items-center justify-between text-xs font-mono cursor-pointer hover:bg-obsidian-800 transition-colors"
+      >
         <div className="flex items-center gap-2.5">
           <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
           <span className="text-slate-300">
@@ -170,7 +175,10 @@ export default function ExecutiveOverviewPage() {
           </span>
           <span className="pill-amber text-[9px]">Rolls to Next Business Day</span>
         </div>
-        <span className="text-[11px] text-slate-400">Reference: RBI Section 25 NI Act</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-slate-400">Reference: RBI Section 25 NI Act</span>
+          <span className="text-[10px] text-amber-400 underline">Inspect Rollover Logic →</span>
+        </div>
       </div>
 
       {/* ── 1. Four-Pillar KPI Ribbon ── */}
@@ -404,6 +412,15 @@ export default function ExecutiveOverviewPage() {
           </p>
         </Link>
       </div>
+
+      {/* ISO 20022 Wire Batch Inspector Modal */}
+      <WireBatchModal
+        isOpen={isWireModalOpen}
+        onClose={() => setIsWireModalOpen(false)}
+        batchId="BATCH-SETTLE-T1"
+        amountPaise={4680000000}
+        beneficiaryName="State Bank of India (Consolidated Clearing)"
+      />
     </div>
   );
 }

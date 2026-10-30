@@ -1,5 +1,6 @@
 .PHONY: up down migrate migrate-down migrate-status build test test-race test-property \
-        test-invariants test-scenarios test-crash bench lint fmt vet check-float clean
+        test-invariants test-scenarios test-crash bench lint fmt vet check-float clean \
+        lint-console typecheck-console
 
 DB_URL      ?= postgres://hisaab:hisaab_dev@localhost:5432/hisaab
 TEST_DB_URL ?= postgres://hisaab:hisaab_dev@localhost:5432/hisaab
@@ -73,3 +74,9 @@ check-float:
 
 clean:
 	rm -rf bin/
+
+lint-console:
+	cd console && npm run lint
+
+typecheck-console:
+	cd console && npx tsc --noEmit

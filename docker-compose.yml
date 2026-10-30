@@ -72,6 +72,7 @@ services:
       NODE_ENV: "production"
       PORT: "3000"
       NEXT_PUBLIC_API_URL: "http://hisaab-api:8080"
+      HISAAB_API_URL: "http://hisaab-api:8080"
     depends_on:
       - hisaab-api
     restart: unless-stopped

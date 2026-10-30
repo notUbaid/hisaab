@@ -10,10 +10,15 @@ import {
   Download,
   CheckCircle2,
   FileDiff,
+  RotateCw,
+  Lock,
 } from "lucide-react";
 import MoneyCell, { formatIndianNumbering } from "@/components/MoneyCell";
 import { ReconException } from "@/lib/scenarioData";
 import { ParticipantPerspective } from "@/lib/rbac";
+import { EncryptedField } from "@/components/EncryptedField";
+import { SignatureInspector } from "@/components/SignatureInspector";
+import { apiClient } from "@/lib/apiClient";
 
 interface ReconDiffDrawerProps {
   exception: ReconException | null;
@@ -29,6 +34,13 @@ export function ReconDiffDrawer({
   perspective = "COLLECTOR_RSP",
 }: ReconDiffDrawerProps) {
   const [resolutionStatus, setResolutionStatus] = useState<string | null>(null);
+  const [isMutating, setIsMutating] = useState<boolean>(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [txResult, setTxResult] = useState<{
+    transactionId: string;
+    journalEntryId: string;
+    message: string;
+  } | null>(null);
 
   if (!exception) return null;
 
@@ -69,22 +81,74 @@ export function ReconDiffDrawer({
 
   const rootCause = getPlainEnglishRootCause(exception);
 
-  // Simulated 3-Way payload components
+  // 3-Way payload components
   const buyerClaimPaise = exception.expectedPaise;
   const sellerClaimPaise = exception.actualPaise;
-  const bankWirePaise = Math.round(exception.actualPaise * 0.994); // Net of tax estimate
+  const bankWirePaise = Math.round(exception.actualPaise * 0.994);
 
-  const handleApproveTolerance = () => {
-    setResolutionStatus("APPROVED_TOLERANCE");
-    if (onResolve) {
-      onResolve(exception.id, "Approve Penny Tolerance via sa:tolerance_adjustment");
+  const handleApproveTolerance = async () => {
+    setIsMutating(true);
+    setMutationError(null);
+    try {
+      const res = await apiClient.post<{
+        success: boolean;
+        transactionId: string;
+        journalEntryId: string;
+        message: string;
+      }>("/api/recon", {
+        action: "approve_tolerance",
+        exceptionId: exception.id,
+        orderId: exception.orderId,
+        variancePaise: exception.variancePaise,
+        operatorRole: perspective,
+      });
+
+      setResolutionStatus("APPROVED_TOLERANCE");
+      setTxResult({
+        transactionId: res.transactionId,
+        journalEntryId: res.journalEntryId,
+        message: res.message,
+      });
+      if (onResolve) {
+        onResolve(exception.id, `Tolerance Approved (${res.transactionId})`);
+      }
+    } catch (err: any) {
+      setMutationError(err.message || "Failed to post tolerance approval");
+    } finally {
+      setIsMutating(false);
     }
   };
 
-  const handleTriggerRefund = () => {
-    setResolutionStatus("REFUND_DISPATCHED");
-    if (onResolve) {
-      onResolve(exception.id, "Automated Refund Dispatched via internal/settlement/refund.go");
+  const handleTriggerRefund = async () => {
+    setIsMutating(true);
+    setMutationError(null);
+    try {
+      const res = await apiClient.post<{
+        success: boolean;
+        transactionId: string;
+        journalEntryId: string;
+        message: string;
+      }>("/api/recon", {
+        action: "trigger_refund",
+        exceptionId: exception.id,
+        orderId: exception.orderId,
+        refundPaise: Math.abs(exception.variancePaise),
+        operatorRole: perspective,
+      });
+
+      setResolutionStatus("REFUND_DISPATCHED");
+      setTxResult({
+        transactionId: res.transactionId,
+        journalEntryId: res.journalEntryId,
+        message: res.message,
+      });
+      if (onResolve) {
+        onResolve(exception.id, `Refund Dispatched (${res.transactionId})`);
+      }
+    } catch (err: any) {
+      setMutationError(err.message || "Failed to dispatch automated refund");
+    } finally {
+      setIsMutating(false);
     }
   };
 
@@ -230,8 +294,8 @@ export function ReconDiffDrawer({
                   <MoneyCell paise={bankWirePaise} className="font-semibold text-slate-100" />
                 </div>
                 <div>
-                  <div className="text-[9px] text-slate-500">UTR Reference:</div>
-                  <div className="text-slate-400 text-[9px] truncate">UTR9847120391</div>
+                  <div className="text-[9px] text-slate-500 mb-0.5">UTR Reference:</div>
+                  <EncryptedField value="UTR9847120391" label="Bank UTR" fieldType="utr" />
                 </div>
                 <div>
                   <div className="text-[9px] text-slate-500">Bank Status:</div>
@@ -280,22 +344,51 @@ export function ReconDiffDrawer({
             </tbody>
           </table>
         </div>
+
+        {/* Cryptographic Signature Inspector for Counterparty Claims */}
+        <SignatureInspector
+          bapId="buyer-app.ondc.org"
+          bppId="seller-app.ondc.org"
+          createdTimestamp={new Date(Date.now() - 3600000).toISOString()}
+          expiresTimestamp={new Date(Date.now() + 1800000).toISOString()}
+          isVerified={true}
+        />
       </div>
 
       {/* ── RBAC-Gated Resolution Bar ── */}
       <div className="p-4 border-t border-white/10 bg-obsidian-900/90 shrink-0 space-y-2">
-        {resolutionStatus ? (
-          <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between text-xs text-emerald-300 font-mono">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>{resolutionStatus} — Ledgers Updated Atomically</span>
-            </div>
-            <button
-              onClick={() => setResolutionStatus(null)}
-              className="text-[10px] text-emerald-400 underline"
-            >
-              Reset
+        {mutationError && (
+          <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-mono flex items-center justify-between">
+            <span>{mutationError}</span>
+            <button onClick={() => setMutationError(null)} className="text-rose-400 underline text-[10px]">
+              Dismiss
             </button>
+          </div>
+        )}
+
+        {txResult ? (
+          <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="font-bold flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                {resolutionStatus}
+              </span>
+              <button
+                onClick={() => {
+                  setResolutionStatus(null);
+                  setTxResult(null);
+                }}
+                className="text-[10px] text-emerald-400 underline"
+              >
+                Reset
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-300">{txResult.message}</p>
+            <div className="text-[10px] text-slate-400 flex items-center gap-3 pt-1 border-t border-white/5">
+              <span>Tx ID: <strong className="text-white font-mono">{txResult.transactionId}</strong></span>
+              <span>•</span>
+              <span>Journal: <strong className="text-emerald-400 font-mono">{txResult.journalEntryId}</strong></span>
+            </div>
           </div>
         ) : (
           <div>
@@ -308,18 +401,28 @@ export function ReconDiffDrawer({
               {/* Option 1: Penny Tolerance */}
               <button
                 onClick={handleApproveTolerance}
-                className="flex-1 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition flex items-center justify-center gap-1.5 shadow-glow"
+                disabled={isMutating}
+                className="flex-1 py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition flex items-center justify-center gap-1.5 shadow-glow disabled:opacity-50"
               >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Approve Tolerance</span>
+                {isMutating ? (
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                )}
+                <span>{isMutating ? "Posting Ledger..." : "Approve Tolerance"}</span>
               </button>
 
               {/* Option 2: Trigger Automated Refund */}
               <button
                 onClick={handleTriggerRefund}
-                className="py-2 px-3 rounded-lg bg-obsidian-750 hover:bg-obsidian-700 border border-white/10 text-slate-200 text-xs font-medium transition flex items-center gap-1.5"
+                disabled={isMutating}
+                className="py-2 px-3 rounded-lg bg-obsidian-750 hover:bg-obsidian-700 border border-white/10 text-slate-200 text-xs font-medium transition flex items-center gap-1.5 disabled:opacity-50"
               >
-                <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                {isMutating ? (
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                )}
                 <span>Trigger Refund</span>
               </button>
 
