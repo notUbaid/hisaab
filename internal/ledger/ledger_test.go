@@ -385,3 +385,127 @@ func TestMemoryLedger_ConcurrentPostsThreadSafety(t *testing.T) {
 		t.Fatalf("audit invariants failed after concurrent postings: %v", err)
 	}
 }
+
+func TestAccountingConventions_DebitAndCreditNormalBalances(t *testing.T) {
+	mem := ledger.NewMemoryLedger()
+	_ = mem.SeedStandardAccounts()
+	ctx := context.Background()
+
+	// 1. Verify collector:ondc_settlement is seeded as a Liability with Credit normal balance
+	collectorAcc, ok := mem.GetAccount("collector:ondc_settlement")
+	if !ok {
+		t.Fatalf("collector:ondc_settlement not found")
+	}
+	if collectorAcc.Type != ledger.AccountLiability {
+		t.Fatalf("expected collector:ondc_settlement to be AccountLiability, got %v", collectorAcc.Type)
+	}
+	if collectorAcc.EffectiveNormalBalance() != ledger.Credit {
+		t.Fatalf("expected collector:ondc_settlement normal balance to be Credit, got %v", collectorAcc.EffectiveNormalBalance())
+	}
+	if !collectorAcc.Constrained {
+		t.Fatalf("expected collector:ondc_settlement to be constrained")
+	}
+
+	// 2. Fund the liability with Credit (increases liability balance)
+	fundReq := ledger.PostRequest{
+		IdempotencyKey: "fund-convention-test-01",
+		CauseType:      ledger.CauseAdjustment,
+		CauseID:        1001,
+		Description:    "Fund escrow liability pool",
+		Lines: []ledger.EntryLine{
+			{AccountName: "ext:nodal_clearing", Direction: ledger.Debit, AmountPaise: 100000},
+			{AccountName: "collector:ondc_settlement", Direction: ledger.Credit, AmountPaise: 100000},
+		},
+	}
+	if _, err := mem.Post(ctx, fundReq); err != nil {
+		t.Fatalf("funding post failed: %v", err)
+	}
+
+	bal, err := mem.GetBalance("collector:ondc_settlement")
+	if err != nil || bal != 100000 {
+		t.Fatalf("expected balance +100000 paise after credit, got %d (err: %v)", bal, err)
+	}
+
+	// 3. Settle / Disburse from the liability with Debit (decreases liability balance)
+	settleReq := ledger.PostRequest{
+		IdempotencyKey: "settle-convention-test-01",
+		CauseType:      ledger.CauseClaim,
+		CauseID:        1002,
+		Description:    "Disburse payout to receiver operative asset",
+		Lines: []ledger.EntryLine{
+			{AccountName: "collector:ondc_settlement", Direction: ledger.Debit, AmountPaise: 60000},
+			{AccountName: "receiver:operative", Direction: ledger.Credit, AmountPaise: 60000},
+		},
+	}
+	if _, err := mem.Post(ctx, settleReq); err != nil {
+		t.Fatalf("settlement post failed: %v", err)
+	}
+
+	balAfter, _ := mem.GetBalance("collector:ondc_settlement")
+	if balAfter != 40000 {
+		t.Fatalf("expected balance +40000 paise after debiting 60000, got %d", balAfter)
+	}
+
+	// 4. Test Asset Account (receiver:operative):
+	// Register a clean asset account to test Debit-increases, Credit-decreases
+	assetAcc, err := mem.RegisterAccount("test:asset_cash", ledger.AccountAsset, "INR", true)
+	if err != nil {
+		t.Fatalf("failed to register asset account: %v", err)
+	}
+	if assetAcc.EffectiveNormalBalance() != ledger.Debit {
+		t.Fatalf("expected asset account to be Debit normal, got %v", assetAcc.EffectiveNormalBalance())
+	}
+
+	// Debit the asset -> balance increases
+	assetDebitReq := ledger.PostRequest{
+		IdempotencyKey: "asset-debit-01",
+		CauseType:      ledger.CauseAdjustment,
+		CauseID:        1003,
+		Description:    "Cash receipt increases asset",
+		Lines: []ledger.EntryLine{
+			{AccountName: "test:asset_cash", Direction: ledger.Debit, AmountPaise: 50000},
+			{AccountName: "fees:ondc_network", Direction: ledger.Credit, AmountPaise: 50000},
+		},
+	}
+	if _, err := mem.Post(ctx, assetDebitReq); err != nil {
+		t.Fatalf("asset debit failed: %v", err)
+	}
+	assetBal, _ := mem.GetBalance("test:asset_cash")
+	if assetBal != 50000 {
+		t.Fatalf("expected asset balance +50000 after debit, got %d", assetBal)
+	}
+
+	// Credit the asset -> balance decreases
+	assetCreditReq := ledger.PostRequest{
+		IdempotencyKey: "asset-credit-01",
+		CauseType:      ledger.CauseAdjustment,
+		CauseID:        1004,
+		Description:    "Cash disbursement decreases asset",
+		Lines: []ledger.EntryLine{
+			{AccountName: "sa:tolerance_adjustment", Direction: ledger.Debit, AmountPaise: 20000},
+			{AccountName: "test:asset_cash", Direction: ledger.Credit, AmountPaise: 20000},
+		},
+	}
+	if _, err := mem.Post(ctx, assetCreditReq); err != nil {
+		t.Fatalf("asset credit failed: %v", err)
+	}
+	assetBalAfter, _ := mem.GetBalance("test:asset_cash")
+	if assetBalAfter != 30000 {
+		t.Fatalf("expected asset balance +30000 after credit of 20000, got %d", assetBalAfter)
+	}
+
+	// Overdraft on constrained asset: credit 40000 when balance is 30000 -> rejected!
+	overdraftReq := ledger.PostRequest{
+		IdempotencyKey: "asset-overdraft-01",
+		CauseType:      ledger.CauseAdjustment,
+		CauseID:        1005,
+		Description:    "Attempted asset overdraft",
+		Lines: []ledger.EntryLine{
+			{AccountName: "sa:tolerance_adjustment", Direction: ledger.Debit, AmountPaise: 40000},
+			{AccountName: "test:asset_cash", Direction: ledger.Credit, AmountPaise: 40000},
+		},
+	}
+	if _, err := mem.Post(ctx, overdraftReq); err == nil {
+		t.Fatalf("expected overdraft error on constrained asset, got nil")
+	}
+}

@@ -209,7 +209,7 @@ func (l *Ledger) PostTx(ctx context.Context, tx pgx.Tx, req PostRequest) (*PostR
 	}
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, name, type, currency, constrained, created_at
+		SELECT id, name, type, currency, constrained, normal_balance, created_at
 		FROM accounts
 		WHERE name = ANY($1)
 	`, accountNames)
@@ -222,7 +222,7 @@ func (l *Ledger) PostTx(ctx context.Context, tx pgx.Tx, req PostRequest) (*PostR
 	accountMapByID := make(map[int64]Account)
 	for rows.Next() {
 		var acc Account
-		if err := rows.Scan(&acc.ID, &acc.Name, &acc.Type, &acc.Currency, &acc.Constrained, &acc.CreatedAt); err != nil {
+		if err := rows.Scan(&acc.ID, &acc.Name, &acc.Type, &acc.Currency, &acc.Constrained, &acc.NormalBalance, &acc.CreatedAt); err != nil {
 			return nil, fmt.Errorf("ledger.PostTx: account scan failed: %w", err)
 		}
 		accountMap[acc.Name] = acc
@@ -238,15 +238,11 @@ func (l *Ledger) PostTx(ctx context.Context, tx pgx.Tx, req PostRequest) (*PostR
 		}
 	}
 
-	// 3. Calculate Net Balance Deltas per Account
+	// 3. Calculate Net Balance Deltas per Account based on normal_balance
 	accountDeltas := make(map[int64]int64)
 	for _, line := range req.Lines {
 		acc := accountMap[line.AccountName]
-		if line.Direction == Credit {
-			accountDeltas[acc.ID] += int64(line.AmountPaise)
-		} else {
-			accountDeltas[acc.ID] -= int64(line.AmountPaise)
-		}
+		accountDeltas[acc.ID] += int64(acc.CalculateDelta(line.Direction, line.AmountPaise))
 	}
 
 	// 4. Update Balances in Ascending account_id order (Deadlock-Free Row Locks & CHECK constraint)
@@ -375,10 +371,7 @@ func (l *Ledger) RegisterAccount(ctx context.Context, name string, accType Accou
 		return errors.New("ledger: postgres pool is nil")
 	}
 
-	normalBalance := "credit"
-	if accType == AccountAsset || accType == AccountExpense || accType == AccountExternal {
-		normalBalance = "debit"
-	}
+	normalBalance := string(accType.NormalBalance())
 
 	var accID int64
 	err := l.pool.QueryRow(ctx, `
@@ -406,7 +399,7 @@ func (l *Ledger) SeedStandardAccounts(ctx context.Context) error {
 		accType     AccountType
 		constrained bool
 	}{
-		{"collector:ondc_settlement", AccountAsset, true},
+		{"collector:ondc_settlement", AccountLiability, true}, // Fiduciary settlement liability pool
 		{"receiver:ondc_settlement", AccountLiability, true},
 		{"receiver:operative", AccountAsset, false},
 		{"collector:operative", AccountAsset, false},
@@ -414,8 +407,8 @@ func (l *Ledger) SeedStandardAccounts(ctx context.Context) error {
 		{"ext:nodal_clearing", AccountExternal, false},
 		{"fees:ondc_network", AccountIncome, false},
 		{"fees:withholding_tax", AccountLiability, false},
-		{"sa:suspense", AccountAsset, false},
-		{"sa:tolerance_adjustment", AccountAsset, false},
+		{"sa:suspense", AccountLiability, false},
+		{"sa:tolerance_adjustment", AccountExpense, false},
 	}
 
 	for _, sa := range standardAccounts {

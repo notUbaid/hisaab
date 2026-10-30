@@ -44,6 +44,7 @@ func (a *defaultTaxAdapter) CalculateOrderTax(orderAmount, commission, bff ledge
 func (a *defaultTaxAdapter) CalculateOrderTaxPaise(orderAmount, commission, bff ledger.AmountPaise) ledger.AmountPaise {
 	res, err := nptoolkit.CalculateTaxWithholding(orderAmount, commission, bff, a.cfg)
 	if err != nil {
+		slog.Error("CRITICAL: Legacy tax calculation failed, propagating zero may violate statutory rules", "error", err)
 		return 0
 	}
 	return res.TotalTaxPaise
@@ -88,8 +89,8 @@ func main() {
 			slog.Warn("Failed to connect to PostgreSQL; falling back to memory ledger", "error", err)
 			mem := ledger.NewMemoryLedger()
 			_ = mem.SeedStandardAccounts()
-			_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountAsset, "INR", false)
-			_, _ = mem.RegisterAccount("sa:tolerance_adjustment", ledger.AccountAsset, "INR", false)
+			_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountLiability, "INR", false)
+			_, _ = mem.RegisterAccount("sa:tolerance_adjustment", ledger.AccountExpense, "INR", false)
 			_, _ = mem.RegisterAccount("tax:gst_tcs_payable", ledger.AccountLiability, "INR", false)
 			_, _ = mem.RegisterAccount("tax:tds_payable", ledger.AccountLiability, "INR", false)
 			eng = mem
@@ -101,8 +102,8 @@ func main() {
 			if err := pgLedger.SeedStandardAccounts(ctxSeed); err != nil {
 				slog.Error("Failed to seed standard accounts in PostgreSQL", "error", err)
 			}
-			_ = pgLedger.RegisterAccount(ctxSeed, "sa:suspense", ledger.AccountAsset, "INR", false)
-			_ = pgLedger.RegisterAccount(ctxSeed, "sa:tolerance_adjustment", ledger.AccountAsset, "INR", false)
+			_ = pgLedger.RegisterAccount(ctxSeed, "sa:suspense", ledger.AccountLiability, "INR", false)
+			_ = pgLedger.RegisterAccount(ctxSeed, "sa:tolerance_adjustment", ledger.AccountExpense, "INR", false)
 			_ = pgLedger.RegisterAccount(ctxSeed, "tax:gst_tcs_payable", ledger.AccountLiability, "INR", false)
 			_ = pgLedger.RegisterAccount(ctxSeed, "tax:tds_payable", ledger.AccountLiability, "INR", false)
 			cancelSeed()
@@ -112,8 +113,8 @@ func main() {
 		slog.Info("HISAAB_DB_URL not configured; running in-memory ledger engine")
 		mem := ledger.NewMemoryLedger()
 		_ = mem.SeedStandardAccounts()
-		_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountAsset, "INR", false)
-		_, _ = mem.RegisterAccount("sa:tolerance_adjustment", ledger.AccountAsset, "INR", false)
+		_, _ = mem.RegisterAccount("sa:suspense", ledger.AccountLiability, "INR", false)
+		_, _ = mem.RegisterAccount("sa:tolerance_adjustment", ledger.AccountExpense, "INR", false)
 		_, _ = mem.RegisterAccount("tax:gst_tcs_payable", ledger.AccountLiability, "INR", false)
 		_, _ = mem.RegisterAccount("tax:tds_payable", ledger.AccountLiability, "INR", false)
 		eng = mem

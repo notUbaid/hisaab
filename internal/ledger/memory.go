@@ -58,12 +58,13 @@ func (m *MemoryLedger) RegisterAccount(name string, accType AccountType, currenc
 	}
 
 	acc := Account{
-		ID:          m.nextAccountID,
-		Name:        name,
-		Type:        accType,
-		Currency:    currency,
-		Constrained: constrained,
-		CreatedAt:   time.Now().UTC(),
+		ID:            m.nextAccountID,
+		Name:          name,
+		Type:          accType,
+		Currency:      currency,
+		Constrained:   constrained,
+		NormalBalance: accType.NormalBalance(),
+		CreatedAt:     time.Now().UTC(),
 	}
 	m.nextAccountID++
 
@@ -85,7 +86,7 @@ func (m *MemoryLedger) SeedStandardAccounts() error {
 		accType     AccountType
 		constrained bool
 	}{
-		{"collector:ondc_settlement", AccountAsset, true},
+		{"collector:ondc_settlement", AccountLiability, true}, // Fiduciary settlement liability pool
 		{"receiver:ondc_settlement", AccountLiability, true},
 		{"receiver:operative", AccountAsset, false},
 		{"collector:operative", AccountAsset, false},
@@ -93,8 +94,8 @@ func (m *MemoryLedger) SeedStandardAccounts() error {
 		{"ext:nodal_clearing", AccountExternal, false},
 		{"fees:ondc_network", AccountIncome, false},
 		{"fees:withholding_tax", AccountLiability, false},
-		{"sa:suspense", AccountAsset, false},
-		{"sa:tolerance_adjustment", AccountAsset, false},
+		{"sa:suspense", AccountLiability, false},
+		{"sa:tolerance_adjustment", AccountExpense, false},
 	}
 
 	for _, sa := range standardAccounts {
@@ -115,7 +116,6 @@ func (m *MemoryLedger) GetAccount(name string) (Account, bool) {
 }
 
 // GetBalance calculates the net balance for a given account in integer paise.
-// Net balance = sum(credit entries) - sum(debit entries).
 func (m *MemoryLedger) GetBalance(accountName string) (AmountPaise, error) {
 	return m.Balance(context.Background(), accountName)
 }
@@ -133,11 +133,7 @@ func (m *MemoryLedger) Balance(ctx context.Context, accountName string) (AmountP
 	var balance AmountPaise
 	for _, entry := range m.entries {
 		if entry.AccountID == acc.ID {
-			if entry.Direction == Credit {
-				balance += entry.AmountPaise
-			} else if entry.Direction == Debit {
-				balance -= entry.AmountPaise
-			}
+			balance += acc.CalculateDelta(entry.Direction, entry.AmountPaise)
 		}
 	}
 
@@ -201,11 +197,7 @@ func (m *MemoryLedger) Post(ctx context.Context, req PostRequest) (*PostResult, 
 			var currentBalance AmountPaise
 			for _, entry := range m.entries {
 				if entry.AccountID == acc.ID {
-					if entry.Direction == Credit {
-						currentBalance += entry.AmountPaise
-					} else if entry.Direction == Debit {
-						currentBalance -= entry.AmountPaise
-					}
+					currentBalance += acc.CalculateDelta(entry.Direction, entry.AmountPaise)
 				}
 			}
 
@@ -213,11 +205,7 @@ func (m *MemoryLedger) Post(ctx context.Context, req PostRequest) (*PostResult, 
 			var delta AmountPaise
 			for _, line := range req.Lines {
 				if line.AccountName == acc.Name {
-					if line.Direction == Credit {
-						delta += line.AmountPaise
-					} else if line.Direction == Debit {
-						delta -= line.AmountPaise
-					}
+					delta += acc.CalculateDelta(line.Direction, line.AmountPaise)
 				}
 			}
 

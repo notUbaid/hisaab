@@ -123,3 +123,45 @@ func TestWireClaimPayload_RoundTrip(t *testing.T) {
 		t.Errorf("Expected SoRDuePaise=96000, got %d", ord.SoRDuePaise)
 	}
 }
+
+func TestISO20022Pacs008Gateway_SandboxAndFormatting(t *testing.T) {
+	gw := settlement.NewISO20022Pacs008Gateway("sandbox", "", nil)
+
+	req := settlement.BankWireRequest{
+		InstructionID:   "INST-20261031-01",
+		EndToEndID:      "E2E-20261031-01",
+		BatchID:         "BATCH-2026-10-31-01",
+		DebtorAccount:   "collector:ondc_settlement",
+		CreditorAccount: "receiver:operative",
+		AmountPaise:     95400,
+		Currency:        "INR",
+		PaymentMethod:   "RTGS",
+	}
+
+	// 1. Check XML generation
+	xml := gw.GeneratePacs008XML(req)
+	if xml == "" {
+		t.Fatalf("expected non-empty XML string")
+	}
+
+	// 2. Dispatch wire in sandbox
+	resp, err := gw.DispatchWire(nil, req)
+	if err != nil {
+		t.Fatalf("DispatchWire failed: %v", err)
+	}
+	if resp.Status != "SETTLED" {
+		t.Fatalf("expected status 'SETTLED', got %q", resp.Status)
+	}
+	if resp.ReferenceNumber == "" {
+		t.Fatalf("expected non-empty UTR reference number")
+	}
+
+	// 3. Status check
+	statusResp, err := gw.GetStatus(nil, resp.ReferenceNumber)
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+	if statusResp.ReferenceNumber != resp.ReferenceNumber {
+		t.Fatalf("expected reference %q, got %q", resp.ReferenceNumber, statusResp.ReferenceNumber)
+	}
+}

@@ -69,21 +69,30 @@ func DefaultWorkerConfig() WorkerConfig {
 
 // OutboxProcessor drains and dispatches outbox events.
 type OutboxProcessor struct {
-	cfg        WorkerConfig
-	pool       *pgxpool.Pool
-	signer     *auth.RequestSigner
-	mu         sync.Mutex
-	inMemoryDB []OutboxRecord
+	cfg         WorkerConfig
+	pool        *pgxpool.Pool
+	signer      *auth.RequestSigner
+	bankGateway settlement.BankGateway
+	mu          sync.Mutex
+	inMemoryDB  []OutboxRecord
 }
 
 // NewOutboxProcessor creates a new OutboxProcessor instance.
 func NewOutboxProcessor(cfg WorkerConfig, pool *pgxpool.Pool, signer *auth.RequestSigner) *OutboxProcessor {
 	return &OutboxProcessor{
-		cfg:        cfg,
-		pool:       pool,
-		signer:     signer,
-		inMemoryDB: make([]OutboxRecord, 0),
+		cfg:         cfg,
+		pool:        pool,
+		signer:      signer,
+		bankGateway: settlement.NewISO20022Pacs008Gateway("sandbox", "", nil),
+		inMemoryDB:  make([]OutboxRecord, 0),
 	}
+}
+
+// SetBankGateway configures a specialized payment clearing rail (e.g. ISO 20022 or custom RTGS gateway).
+func (p *OutboxProcessor) SetBankGateway(gw settlement.BankGateway) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.bankGateway = gw
 }
 
 // EnqueueInMemory adds a synthetic record for unit testing without live PostgreSQL.
@@ -313,11 +322,35 @@ func (p *OutboxProcessor) handleBankInstruction(ctx context.Context, rawPayload 
 		return errors.New("invalid instruction amount paise <= 0")
 	}
 
-	slog.Info("Dispatched net bank instruction",
+	gw := p.bankGateway
+	if gw == nil {
+		gw = settlement.NewISO20022Pacs008Gateway("sandbox", "", nil)
+	}
+
+	wireReq := settlement.BankWireRequest{
+		InstructionID:   fmt.Sprintf("INST-%s-%s", instruction.BatchID, instruction.ToAccount),
+		EndToEndID:      fmt.Sprintf("E2E-%s-%d", instruction.BatchID, instruction.AmountPaise),
+		BatchID:         instruction.BatchID,
+		DebtorAccount:   instruction.FromAccount,
+		CreditorAccount: instruction.ToAccount,
+		AmountPaise:     instruction.AmountPaise,
+		Currency:        "INR",
+		PaymentMethod:   "RTGS",
+		ExecutionDate:   time.Now().UTC(),
+	}
+
+	resp, err := gw.DispatchWire(ctx, wireReq)
+	if err != nil {
+		return fmt.Errorf("bank wire dispatch failed: %w", err)
+	}
+
+	slog.Info("Dispatched net bank instruction via clearing rail",
 		"from", instruction.FromAccount,
 		"to", instruction.ToAccount,
 		"amount_paise", instruction.AmountPaise,
 		"batch_id", instruction.BatchID,
+		"utr", resp.ReferenceNumber,
+		"status", resp.Status,
 	)
 	return nil
 }

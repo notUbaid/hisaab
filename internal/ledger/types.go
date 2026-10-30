@@ -75,6 +75,30 @@ type Account struct {
 	CreatedAt     time.Time   `json:"created_at"`
 }
 
+// EffectiveNormalBalance returns the normal balance direction (Debit or Credit) for this account.
+func (a Account) EffectiveNormalBalance() Direction {
+	if a.NormalBalance != "" {
+		return a.NormalBalance
+	}
+	return a.Type.NormalBalance()
+}
+
+// CalculateDelta computes the signed balance delta for an entry line based on double-entry accounting rules:
+// - Debit-normal accounts (Assets, Expenses): Debit increases balance (+), Credit decreases balance (-).
+// - Credit-normal accounts (Liabilities, Equity, Income): Credit increases balance (+), Debit decreases balance (-).
+func (a Account) CalculateDelta(dir Direction, amt AmountPaise) AmountPaise {
+	if a.EffectiveNormalBalance() == Debit {
+		if dir == Debit {
+			return amt
+		}
+		return -amt
+	}
+	if dir == Credit {
+		return amt
+	}
+	return -amt
+}
+
 // EntryLine specifies an individual debit or credit leg for a transaction.
 type EntryLine struct {
 	AccountName string      `json:"account_name"`

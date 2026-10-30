@@ -1,11 +1,16 @@
 package settlement
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ubaid/hisaab/internal/ledger"
@@ -243,4 +248,189 @@ func ParseClaimFromJSON(data []byte) (*SettleClaimPayload, error) {
 		return nil, fmt.Errorf("wire: failed to parse claim payload: %w", err)
 	}
 	return &direct, nil
+}
+
+// BankWireRequest represents the standardized interbank credit transfer payload.
+type BankWireRequest struct {
+	InstructionID   string             `json:"instruction_id"`
+	EndToEndID      string             `json:"end_to_end_id"`
+	BatchID         string             `json:"batch_id"`
+	DebtorAccount   string             `json:"debtor_account"`
+	CreditorAccount string             `json:"creditor_account"`
+	AmountPaise     ledger.AmountPaise `json:"amount_paise"`
+	Currency        string             `json:"currency"`
+	PaymentMethod   string             `json:"payment_method"` // "RTGS", "NEFT", "IMPS"
+	ExecutionDate   time.Time          `json:"execution_date"`
+	ISO20022XML     string             `json:"iso20022_xml,omitempty"`
+}
+
+// BankWireResponse represents the institutional gateway response containing UTR confirmation.
+type BankWireResponse struct {
+	ReferenceNumber string    `json:"reference_number"` // RBI Unique Transaction Reference (UTR)
+	Status          string    `json:"status"`           // "ACCEPTED", "SETTLED", "REJECTED"
+	Timestamp       time.Time `json:"timestamp"`
+	ErrorCode       string    `json:"error_code,omitempty"`
+	ErrorMessage    string    `json:"error_message,omitempty"`
+}
+
+// BankGateway defines the pluggable financial clearing rail interface for nodal settlement dispatches.
+type BankGateway interface {
+	DispatchWire(ctx context.Context, req BankWireRequest) (*BankWireResponse, error)
+	GetStatus(ctx context.Context, referenceNumber string) (*BankWireResponse, error)
+}
+
+// ISO20022Pacs008Gateway formats and dispatches ISO 20022 pacs.008.001.08 credit transfer messages.
+type ISO20022Pacs008Gateway struct {
+	mode         string // "sandbox" or "live"
+	endpointURL  string
+	httpClient   *http.Client
+	mu           sync.RWMutex
+	settledWires map[string]*BankWireResponse
+}
+
+// NewISO20022Pacs008Gateway initializes a payment gateway conforming to ISO 20022 interbank standards.
+func NewISO20022Pacs008Gateway(mode, endpointURL string, client *http.Client) *ISO20022Pacs008Gateway {
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	if mode == "" {
+		mode = "sandbox"
+	}
+	return &ISO20022Pacs008Gateway{
+		mode:         mode,
+		endpointURL:  endpointURL,
+		httpClient:   client,
+		settledWires: make(map[string]*BankWireResponse),
+	}
+}
+
+// GeneratePacs008XML formats a BankWireRequest into standard ISO 20022 pacs.008.001.08 XML document.
+func (g *ISO20022Pacs008Gateway) GeneratePacs008XML(req BankWireRequest) string {
+	ccy := req.Currency
+	if ccy == "" {
+		ccy = "INR"
+	}
+	method := req.PaymentMethod
+	if method == "" {
+		method = "RTGS"
+	}
+	decAmt := FormatPaiseToDecimal(req.AmountPaise)
+	nowStr := req.ExecutionDate.UTC().Format(time.RFC3339)
+	if req.ExecutionDate.IsZero() {
+		nowStr = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+  <FIToFICstmrCdtTrf>
+    <GrpHdr>
+      <MsgId>MSG-%s</MsgId>
+      <CreDtTm>%s</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <SttlmInf>
+        <SttlmMtd>CLRG</SttlmMtd>
+        <ClrSys>
+          <Prtry>%s</Prtry>
+        </ClrSys>
+      </SttlmInf>
+    </GrpHdr>
+    <CdtTrfTxInf>
+      <PmtId>
+        <EndToEndId>%s</EndToEndId>
+      </PmtId>
+      <IntrBkSttlmAmt Ccy="%s">%s</IntrBkSttlmAmt>
+      <Dbtr>
+        <Nm>ONDC Nodal Escrow Account</Nm>
+        <Id><OrgId><Othr><Id>%s</Id></Othr></OrgId></Id>
+      </Dbtr>
+      <Cdtr>
+        <Nm>Settlement Beneficiary Participant</Nm>
+        <Id><OrgId><Othr><Id>%s</Id></Othr></OrgId></Id>
+      </Cdtr>
+      <RmtInf>
+        <Ustrd>Hisaab Settlement Batch %s</Ustrd>
+      </RmtInf>
+    </CdtTrfTxInf>
+  </FIToFICstmrCdtTrf>
+</Document>`,
+		req.InstructionID, nowStr, method, req.EndToEndID, ccy, decAmt,
+		req.DebtorAccount, req.CreditorAccount, req.BatchID)
+}
+
+// DispatchWire submits an interbank payment instruction via the configured clearing rail.
+func (g *ISO20022Pacs008Gateway) DispatchWire(ctx context.Context, req BankWireRequest) (*BankWireResponse, error) {
+	if req.AmountPaise <= 0 {
+		return nil, errors.New("gateway: wire transfer amount must be strictly positive")
+	}
+	if req.DebtorAccount == "" || req.CreditorAccount == "" {
+		return nil, errors.New("gateway: debtor and creditor accounts must be non-empty")
+	}
+
+	xmlDoc := g.GeneratePacs008XML(req)
+	req.ISO20022XML = xmlDoc
+
+	// In sandbox mode, generate deterministic RBI UTR reference and record settlement
+	if g.mode == "sandbox" {
+		h := sha256.New()
+		h.Write([]byte(fmt.Sprintf("%s|%s|%d|%s", req.InstructionID, req.BatchID, req.AmountPaise, req.CreditorAccount)))
+		utrHash := hex.EncodeToString(h.Sum(nil))[:16]
+		utr := fmt.Sprintf("UTR-ONDC-%s-%s", time.Now().Format("20060102"), strings.ToUpper(utrHash))
+
+		resp := &BankWireResponse{
+			ReferenceNumber: utr,
+			Status:          "SETTLED",
+			Timestamp:       time.Now().UTC(),
+		}
+
+		g.mu.Lock()
+		g.settledWires[utr] = resp
+		g.mu.Unlock()
+
+		return resp, nil
+	}
+
+	// Live mTLS or clearing rail endpoint dispatch
+	if g.endpointURL == "" {
+		return nil, errors.New("gateway: live endpoint URL is unconfigured")
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", g.endpointURL, strings.NewReader(xmlDoc))
+	if err != nil {
+		return nil, fmt.Errorf("gateway: failed to create clearing request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/xml")
+	httpReq.Header.Set("X-Idempotency-Key", req.InstructionID)
+
+	httpResp, err := g.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: clearing rail network dispatch error: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode >= 400 {
+		return nil, fmt.Errorf("gateway: clearing rail returned HTTP error status %d", httpResp.StatusCode)
+	}
+
+	var parsedResp BankWireResponse
+	if err := json.NewDecoder(httpResp.Body).Decode(&parsedResp); err != nil {
+		return nil, fmt.Errorf("gateway: failed to decode clearing response: %w", err)
+	}
+
+	g.mu.Lock()
+	g.settledWires[parsedResp.ReferenceNumber] = &parsedResp
+	g.mu.Unlock()
+
+	return &parsedResp, nil
+}
+
+// GetStatus retrieves the clearing confirmation status of a previously dispatched wire.
+func (g *ISO20022Pacs008Gateway) GetStatus(ctx context.Context, referenceNumber string) (*BankWireResponse, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	res, ok := g.settledWires[referenceNumber]
+	if !ok {
+		return nil, fmt.Errorf("gateway: reference number %q not found", referenceNumber)
+	}
+	return res, nil
 }
