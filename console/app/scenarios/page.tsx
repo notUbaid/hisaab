@@ -8,6 +8,7 @@ import {
   Search,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   ShieldCheck,
   FileCode,
   Tag,
@@ -27,6 +28,7 @@ export default function ScenariosStudioPage() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
   const [executionMessage, setExecutionMessage] = useState<string | null>(null);
+  const [isExecutionError, setIsExecutionError] = useState<boolean>(false);
 
   // Active scenario
   const activeScenario = useMemo(() => {
@@ -63,6 +65,7 @@ export default function ScenariosStudioPage() {
   // Execute scenario against Go API or CLI runner
   const handleExecuteScenario = async () => {
     setIsExecuting(true);
+    setIsExecutionError(false);
     setExecutionMessage("Executing against Go settlement engine...");
     try {
       const res = await fetch("/api/scenarios/run", {
@@ -72,16 +75,19 @@ export default function ScenariosStudioPage() {
       });
       const data = await res.json();
       setIsExecuting(false);
-      setExecutionMessage(
-        data.passed
-          ? `Verified Cleanly: ${data.serverStatus} (${data.latencyMs ?? 12}ms)`
-          : `Execution Complete: ${data.serverStatus || "Done"}`
-      );
-      setTimeout(() => setExecutionMessage(null), 4000);
+      if (res.ok && data.passed) {
+        setIsExecutionError(false);
+        setExecutionMessage(`Verified: ${data.serverStatus} (${data.latencyMs ?? 12}ms)`);
+      } else {
+        setIsExecutionError(true);
+        setExecutionMessage(`Verification Failed: ${data.error || data.serverStatus || "Conformance check failed"}`);
+      }
+      setTimeout(() => setExecutionMessage(null), 5000);
     } catch {
       setIsExecuting(false);
-      setExecutionMessage("Verified Cleanly (Local Invariants Guaranteed)");
-      setTimeout(() => setExecutionMessage(null), 3000);
+      setIsExecutionError(true);
+      setExecutionMessage("Engine Unavailable: Offline verification failed");
+      setTimeout(() => setExecutionMessage(null), 5000);
     }
   };
 
@@ -250,8 +256,18 @@ export default function ScenariosStudioPage() {
         </div>
 
         {executionMessage && (
-          <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300 flex items-center gap-2 animate-in fade-in">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <div
+            className={`p-3 rounded-lg border text-xs font-mono flex items-center gap-2 animate-in fade-in ${
+              isExecutionError
+                ? "bg-rose-500/10 border-rose-500/30 text-rose-300"
+                : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+            }`}
+          >
+            {isExecutionError ? (
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            )}
             <span>{executionMessage}</span>
           </div>
         )}

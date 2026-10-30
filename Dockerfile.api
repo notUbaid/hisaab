@@ -26,6 +26,11 @@ COPY --from=builder /bin/hisaab-api /app/hisaab-api
 COPY --from=builder /bin/hisaab-worker /app/hisaab-worker
 COPY --from=builder /bin/hisaab-cli /app/hisaab-cli
 
+# Copy scenario definitions and database migrations for Docker execution
+COPY spec /app/spec
+COPY spec/scenarios /app/scenarios
+COPY db /app/db
+
 EXPOSE 8080
 
 ENTRYPOINT ["/app/hisaab-api"]

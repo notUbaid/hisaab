@@ -118,11 +118,13 @@ export async function POST(req: NextRequest) {
     } catch (cliErr: any) {
       return NextResponse.json(
         {
-          error: "Failed to execute Go scenario runner",
+          error: "Verification Engine Unavailable",
           details: cliErr.message,
+          passed: false,
+          serverStatus: "VERIFICATION_UNAVAILABLE",
           scenarioId,
         },
-        { status: 500 }
+        { status: 503 }
       );
     }
   } catch (error: any) {

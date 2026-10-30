@@ -74,48 +74,66 @@ CREATE INDEX idx_idempotency_keys_expires ON idempotency_keys (expires_at);
 
 -- 5. Claims (/settle submissions)
 CREATE TABLE claims (
-    id              BIGSERIAL PRIMARY KEY,
-    message_id      TEXT NOT NULL UNIQUE,
-    np_pair_id      TEXT NOT NULL,
-    settlement_date DATE NOT NULL,
-    submitted_by    TEXT NOT NULL CHECK (submitted_by IN ('buyer_app', 'seller_app', 'logistics_app')),
-    status          TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received', 'valid', 'invalid', 'processed')),
-    raw_payload     JSONB NOT NULL,
-    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    spec_version    TEXT NOT NULL DEFAULT 'RSF-2.0'
+    id                 BIGSERIAL PRIMARY KEY,
+    message_id         TEXT NOT NULL UNIQUE,
+    settlement_id      TEXT NOT NULL DEFAULT '',
+    np_pair_id         TEXT NOT NULL,
+    settlement_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+    submitted_by       TEXT NOT NULL CHECK (submitted_by IN ('buyer_app', 'seller_app', 'logistics_app')),
+    collector_acc      TEXT NOT NULL DEFAULT '',
+    receiver_acc       TEXT NOT NULL DEFAULT '',
+    request_hash       TEXT NOT NULL DEFAULT '',
+    order_count        INT NOT NULL DEFAULT 0,
+    total_amount_paise BIGINT NOT NULL DEFAULT 0,
+    status             TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received', 'valid', 'invalid', 'processed', 'settled')),
+    raw_payload        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    received_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    spec_version       TEXT NOT NULL DEFAULT 'RSF-2.0'
 );
 
 CREATE INDEX idx_claims_np_date ON claims (np_pair_id, settlement_date, status);
+CREATE INDEX idx_claims_message_id ON claims (message_id);
 
 -- 6. Claim Lines (per-order lines within a claim)
 CREATE TABLE claim_lines (
     id               BIGSERIAL PRIMARY KEY,
-    claim_id         BIGINT NOT NULL REFERENCES claims(id) ON DELETE RESTRICT,
+    claim_id         BIGINT NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
     network_order_id TEXT NOT NULL,
     amount_paise     BIGINT NOT NULL CHECK (amount_paise > 0),
     commission_paise BIGINT NOT NULL DEFAULT 0 CHECK (commission_paise >= 0),
-    bff_paise        BIGINT NOT NULL DEFAULT 0 CHECK (bff_paise >= 0)
+    bff_paise        BIGINT NOT NULL DEFAULT 0 CHECK (bff_paise >= 0),
+    sor_due_paise    BIGINT NOT NULL DEFAULT 0 CHECK (sor_due_paise >= 0)
 );
 
 CREATE INDEX idx_claim_lines_claim ON claim_lines (claim_id);
 CREATE INDEX idx_claim_lines_order ON claim_lines (network_order_id);
 
--- 7. Batch Runs (non-partitioned table for global run_id uniqueness - S1)
+-- 7. Batch Runs (non-partitioned table for global run_id sequence - S1)
 CREATE TABLE batch_runs (
-    run_id     TEXT PRIMARY KEY,
+    run_id     BIGSERIAL PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- 7b. Settlement Batches (partitioned by settlement_date - S1)
 CREATE TABLE settlement_batches (
-    id              BIGSERIAL,
-    np_pair_id      TEXT NOT NULL,
-    settlement_date DATE NOT NULL,
-    run_id          TEXT NOT NULL REFERENCES batch_runs(run_id),
-    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'matching', 'balance_check', 'instructed', 'settled', 'failed')),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at    TIMESTAMPTZ,
+    id                BIGSERIAL,
+    batch_id          TEXT NOT NULL,
+    np_pair_id        TEXT NOT NULL,
+    settlement_date   DATE NOT NULL,
+    run_id            BIGINT NOT NULL REFERENCES batch_runs(run_id),
+    status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'matching', 'balance_check', 'instructed', 'settled', 'failed', 'PENDING', 'SETTLED', 'PARTIALLY_SETTLED', 'REJECTED', 'EXCEPTION')),
+    matched_count     INT NOT NULL DEFAULT 0,
+    unmatched_count   INT NOT NULL DEFAULT 0,
+    total_gross_paise BIGINT NOT NULL DEFAULT 0,
+    net_payout_paise  BIGINT NOT NULL DEFAULT 0,
+    total_tax_paise   BIGINT NOT NULL DEFAULT 0,
+    tds_paise         BIGINT NOT NULL DEFAULT 0,
+    gst_tcs_paise     BIGINT NOT NULL DEFAULT 0,
+    merkle_root       TEXT NOT NULL DEFAULT '',
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at      TIMESTAMPTZ,
     PRIMARY KEY (id, settlement_date),
+    UNIQUE (batch_id, settlement_date),
     UNIQUE (run_id, settlement_date)
 ) PARTITION BY RANGE (settlement_date);
 
@@ -128,18 +146,19 @@ CREATE TABLE settlement_batches_2027 PARTITION OF settlement_batches
 CREATE TABLE settlement_batches_default PARTITION OF settlement_batches DEFAULT;
 
 CREATE INDEX idx_batches_open ON settlement_batches (np_pair_id, settlement_date)
-    WHERE status = 'open';
+    WHERE status = 'open' OR status = 'PENDING';
+CREATE INDEX idx_batches_batch_id ON settlement_batches (batch_id);
 
 -- 8. Match Results
 CREATE TABLE match_results (
     id               BIGSERIAL PRIMARY KEY,
-    batch_id         BIGINT NOT NULL,
+    batch_id         TEXT NOT NULL,
     settlement_date  DATE NOT NULL,
     network_order_id TEXT NOT NULL,
     buyer_claim_id   BIGINT REFERENCES claims(id),
     seller_claim_id  BIGINT REFERENCES claims(id),
     status           TEXT NOT NULL CHECK (status IN ('matched', 'unmatched', 'rejected')),
-    policy_version   TEXT NOT NULL,
+    policy_version   TEXT NOT NULL DEFAULT '2.0',
     matched_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -149,13 +168,15 @@ CREATE INDEX idx_match_order ON match_results (network_order_id);
 -- 9. Instructions (Net Bank Instructions)
 CREATE TABLE instructions (
     id              BIGSERIAL PRIMARY KEY,
-    batch_id        BIGINT NOT NULL,
+    batch_id        TEXT NOT NULL,
     from_account    TEXT NOT NULL,
     to_account      TEXT NOT NULL,
     amount_paise    BIGINT NOT NULL CHECK (amount_paise > 0),
+    currency        TEXT NOT NULL DEFAULT 'INR',
     status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'credited', 'failed')),
     sent_at         TIMESTAMPTZ,
-    settled_at      TIMESTAMPTZ
+    settled_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_instructions_batch ON instructions (batch_id);
@@ -163,12 +184,16 @@ CREATE INDEX idx_instructions_batch ON instructions (batch_id);
 -- 10. Batch Merkle Roots (Tamper Evidence per batch)
 CREATE TABLE batch_roots (
     id             BIGSERIAL PRIMARY KEY,
-    batch_id       BIGINT NOT NULL UNIQUE,
+    batch_id       TEXT NOT NULL UNIQUE,
     root_hash      TEXT NOT NULL,
+    leaf_count     INT NOT NULL DEFAULT 0,
+    algorithm      TEXT NOT NULL DEFAULT 'sha256',
     prev_root_hash TEXT,
-    np_pair_id     TEXT NOT NULL,
+    np_pair_id     TEXT NOT NULL DEFAULT '',
     computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX idx_batch_roots_batch ON batch_roots (batch_id);
 
 -- 11. Transactional Outbox (SKIP LOCKED delivery)
 CREATE TABLE outbox (
@@ -261,3 +286,19 @@ CREATE CONSTRAINT TRIGGER journal_entries_balanced
     AFTER INSERT ON journal_entries
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION assert_balanced();
+
+-- goose Down
+DROP TRIGGER IF EXISTS journal_entries_balanced ON journal_entries;
+DROP FUNCTION IF EXISTS assert_balanced CASCADE;
+DROP TRIGGER IF EXISTS journal_transactions_no_truncate ON journal_transactions;
+DROP TRIGGER IF EXISTS journal_entries_no_truncate ON journal_entries;
+DROP FUNCTION IF EXISTS no_truncate CASCADE;
+DROP TRIGGER IF EXISTS no_update_audit_log ON audit_log;
+DROP TRIGGER IF EXISTS no_update_journal_transactions ON journal_transactions;
+DROP TRIGGER IF EXISTS no_update_journal_entries ON journal_entries;
+DROP FUNCTION IF EXISTS prevent_mutation CASCADE;
+
+DROP TABLE IF EXISTS audit_log, calendar_days, outbox, batch_roots, instructions,
+    match_results, settlement_batches, settlement_batches_default, settlement_batches_2027, settlement_batches_2026,
+    batch_runs, claim_lines, claims, idempotency_keys, journal_entries, journal_entries_default, journal_entries_2026_12,
+    journal_entries_2026_11, journal_entries_2026_10, journal_transactions, account_balances, accounts CASCADE;

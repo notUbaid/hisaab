@@ -26,6 +26,7 @@ export default function ExecutiveOverviewPage() {
   });
   const [isSimulating, setIsSimulating] = useState(false);
   const [simMessage, setSimMessage] = useState<string | null>(null);
+  const [isSimError, setIsSimError] = useState(false);
 
   // Live countdown to 17:00:00 IST cutoff
   useEffect(() => {
@@ -42,6 +43,7 @@ export default function ExecutiveOverviewPage() {
 
   const handleTriggerBatch = async () => {
     setIsSimulating(true);
+    setIsSimError(false);
     setSimMessage("Triggering Live ONDC Settle Batch...");
     try {
       const res = await fetch("/api/scenarios/run", {
@@ -51,12 +53,25 @@ export default function ExecutiveOverviewPage() {
       });
       const data = await res.json();
       setIsSimulating(false);
-      setSimMessage(data.passed ? `Batch Settled (${data.latencyMs ?? 14}ms)` : "Batch Executed");
-      setTimeout(() => setSimMessage(null), 4000);
+      if (res.ok && data.passed) {
+        setIsSimError(false);
+        setSimMessage(`Batch Settled (${data.latencyMs ?? 14}ms)`);
+      } else {
+        setIsSimError(true);
+        setSimMessage(`Batch Failed: ${data.error || data.serverStatus || "Execution failed"}`);
+      }
+      setTimeout(() => {
+        setSimMessage(null);
+        setIsSimError(false);
+      }, 4000);
     } catch {
       setIsSimulating(false);
-      setSimMessage("Batch Settled (Local Engine)");
-      setTimeout(() => setSimMessage(null), 3000);
+      setIsSimError(true);
+      setSimMessage("Engine Unavailable: Offline");
+      setTimeout(() => {
+        setSimMessage(null);
+        setIsSimError(false);
+      }, 4000);
     }
   };
 
@@ -119,12 +134,21 @@ export default function ExecutiveOverviewPage() {
           <button
             onClick={handleTriggerBatch}
             disabled={isSimulating}
-            className="btn-primary flex items-center gap-2 py-2 px-3.5 text-xs shadow-glow"
+            className={`flex items-center gap-2 py-2 px-3.5 text-xs transition-colors rounded-lg font-medium ${
+              isSimError
+                ? "bg-rose-500/10 text-rose-300 border border-rose-500/40"
+                : "btn-primary shadow-glow"
+            }`}
           >
             {isSimulating ? (
               <>
                 <RotateCw className="w-3.5 h-3.5 animate-spin" />
                 <span>Running...</span>
+              </>
+            ) : isSimError ? (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                <span>{simMessage || "Trigger Batch Settle"}</span>
               </>
             ) : (
               <>

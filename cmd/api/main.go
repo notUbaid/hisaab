@@ -215,18 +215,13 @@ func main() {
 
 		// Locate scenario YAML file
 		scenarioPath := fmt.Sprintf("spec/scenarios/%s.yaml", scenarioIDLower)
-		if _, err := os.Stat(scenarioPath); err != nil {
-			scenarioPath = fmt.Sprintf("spec/scenarios/%s.yaml", strings.ToUpper(scenarioID))
-			if _, err2 := os.Stat(scenarioPath); err2 != nil {
-				http.Error(w, fmt.Sprintf("Scenario file %s not found", scenarioPath), http.StatusNotFound)
-				return
-			}
-		}
-
 		sc, err := scenariodsl.LoadScenarioFile(scenarioPath)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to load scenario %s: %v", scenarioID, err), http.StatusBadRequest)
-			return
+			sc, err = scenariodsl.LoadScenarioFile(fmt.Sprintf("%s.yaml", scenarioIDLower))
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Scenario file for %s not found: %v", scenarioID, err), http.StatusNotFound)
+				return
+			}
 		}
 
 		runner := scenariodsl.NewRunner()

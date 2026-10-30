@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ubaid/hisaab/internal/audit"
@@ -19,6 +20,22 @@ import (
 func LoadScenarioFile(path string) (*ScenarioDef, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		base := filepath.Base(path)
+		candidates := []string{
+			filepath.Join("spec", "scenarios", path),
+			filepath.Join("spec", "scenarios", base),
+			filepath.Join("scenarios", path),
+			filepath.Join("scenarios", base),
+			filepath.Join("..", "spec", "scenarios", base),
+			filepath.Join("..", "..", "spec", "scenarios", base),
+			filepath.Join("/app", "spec", "scenarios", base),
+			filepath.Join("/app", "scenarios", base),
+		}
+		for _, cand := range candidates {
+			if d, e := os.ReadFile(cand); e == nil {
+				return LoadScenarioYAML(d)
+			}
+		}
 		return nil, fmt.Errorf("scenariodsl: read file %q failed: %w", path, err)
 	}
 	return LoadScenarioYAML(data)

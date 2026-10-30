@@ -2,9 +2,15 @@ package settlement_test
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ubaid/hisaab/internal/calendar"
 	"github.com/ubaid/hisaab/internal/ledger"
 	"github.com/ubaid/hisaab/internal/settlement"
@@ -327,5 +333,210 @@ func TestOrchestrator_PartialMatch_PartiallySettledStatus(t *testing.T) {
 	}
 	if b.MatchedCount != 1 || b.UnmatchedCount != 1 {
 		t.Errorf("Expected 1 matched and 1 unmatched order, got %d and %d", b.MatchedCount, b.UnmatchedCount)
+	}
+}
+
+func findMigrationFileForTest() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for i := 0; i < 5; i++ {
+		candidate := filepath.Join(dir, "db", "migrations", "00001_init.sql")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", fmt.Errorf("00001_init.sql not found in parent directories")
+}
+
+func loadMigrationUpSQLForTest() (string, error) {
+	path, err := findMigrationFileForTest()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	content := string(data)
+	if parts := strings.Split(content, "-- goose Down"); len(parts) > 0 {
+		return parts[0], nil
+	}
+	return content, nil
+}
+
+func TestOrchestrator_PostgreSQL_PersistenceAndRestore(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set; skipping live PostgreSQL orchestrator persistence test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("Failed to connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+
+	// Isolate in dedicated test schema
+	schema := fmt.Sprintf("test_orch_restore_%d_%d", time.Now().UnixNano(), rand.Intn(10000))
+	_, err = pool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s; SET search_path TO %s, public;", schema, schema))
+	if err != nil {
+		t.Fatalf("Failed to create isolated test schema: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, fmt.Sprintf("DROP SCHEMA %s CASCADE;", schema))
+	}()
+
+	// Apply migration DDL
+	migrationSQL, err := loadMigrationUpSQLForTest()
+	if err != nil {
+		t.Fatalf("Failed to load migration SQL: %v", err)
+	}
+	if _, err := pool.Exec(ctx, migrationSQL); err != nil {
+		t.Fatalf("Failed to apply migration SQL: %v", err)
+	}
+
+	pgLedger := ledger.New(pool)
+	if err := pgLedger.SeedStandardAccounts(ctx); err != nil {
+		t.Fatalf("Failed to seed standard accounts: %v", err)
+	}
+	_ = pgLedger.RegisterAccount(ctx, "sa:suspense", ledger.AccountAsset, "INR", false)
+	_ = pgLedger.RegisterAccount(ctx, "sa:tolerance_adjustment", ledger.AccountAsset, "INR", false)
+	_ = pgLedger.RegisterAccount(ctx, "tax:gst_tcs_payable", ledger.AccountLiability, "INR", false)
+	_ = pgLedger.RegisterAccount(ctx, "tax:tds_payable", ledger.AccountLiability, "INR", false)
+
+	// Pre-fund collector
+	fundReq := ledger.PostRequest{
+		IdempotencyKey: "fund-pg-test",
+		CauseType:      ledger.CauseAdjustment,
+		CauseID:        1,
+		Description:    "Initial funding for PG test",
+		Lines: []ledger.EntryLine{
+			{AccountName: "ext:nodal_clearing", Direction: ledger.Debit, AmountPaise: 200000},
+			{AccountName: "collector:ondc_settlement", Direction: ledger.Credit, AmountPaise: 200000},
+		},
+		PostedAt: time.Now().UTC(),
+	}
+	if _, err := pgLedger.Post(ctx, fundReq); err != nil {
+		t.Fatalf("Initial funding failed: %v", err)
+	}
+
+	cal := calendar.New(nil)
+	matcher := settlement.NewMatcher(settlement.DefaultPolicy())
+
+	// 1. First Orchestrator lifecycle: processes claims and settles batch
+	orch1 := settlement.NewOrchestrator(pgLedger, matcher, cal, mockTaxCalculator{}, nil)
+	orch1.SetPool(pool)
+
+	buyerClaim := &settlement.SettleClaimPayload{
+		Context: &settlement.BecknContext{
+			Action:    "settle",
+			MessageID: "msg-pg-buyer-01",
+		},
+		SettlementID: "SETTLE-PG-01",
+		NPPairID:     "BAP-PG:BPP-PG",
+		SubmittedBy:  "buyer_app",
+		CollectorAcc: "collector:ondc_settlement",
+		ReceiverAcc:  "receiver:ondc_settlement",
+		Orders: []settlement.OrderSettlementLine{
+			{
+				NetworkOrderID:   "ORD-PG-1",
+				OrderAmountPaise: 100000,
+				CommissionPaise:  3000,
+				BFFPaise:         1000,
+				SoRDuePaise:      96000,
+			},
+		},
+	}
+	ack1, err := orch1.SubmitClaim(ctx, buyerClaim)
+	if err != nil || ack1.Message.Ack.Status != settlement.AckStatusACK {
+		t.Fatalf("orch1 submit buyer claim failed: %v", err)
+	}
+
+	sellerClaim := &settlement.SettleClaimPayload{
+		Context: &settlement.BecknContext{
+			Action:    "settle",
+			MessageID: "msg-pg-seller-01",
+		},
+		SettlementID: "SETTLE-PG-01",
+		NPPairID:     "BAP-PG:BPP-PG",
+		SubmittedBy:  "seller_app",
+		CollectorAcc: "collector:ondc_settlement",
+		ReceiverAcc:  "receiver:ondc_settlement",
+		Orders: []settlement.OrderSettlementLine{
+			{
+				NetworkOrderID:   "ORD-PG-1",
+				OrderAmountPaise: 100000,
+				CommissionPaise:  3000,
+				BFFPaise:         1000,
+				SoRDuePaise:      96000,
+			},
+		},
+	}
+	ack2, err := orch1.SubmitClaim(ctx, sellerClaim)
+	if err != nil || ack2.Message.Ack.Status != settlement.AckStatusACK {
+		t.Fatalf("orch1 submit seller claim failed: %v", err)
+	}
+
+	batches1 := orch1.ListBatches()
+	if len(batches1) != 1 {
+		t.Fatalf("Expected 1 batch in orch1, got %d", len(batches1))
+	}
+	batchID := batches1[0].BatchID
+
+	// 2. Simulate API process crash & restart: Create a fresh Orchestrator instance
+	orch2 := settlement.NewOrchestrator(pgLedger, matcher, cal, mockTaxCalculator{}, nil)
+	orch2.SetPool(pool) // SetPool triggers RestoreFromPostgres
+
+	// Verify claims restored
+	claimRecord, ok := orch2.GetClaim("msg-pg-buyer-01")
+	if !ok || claimRecord == nil {
+		t.Fatalf("Expected msg-pg-buyer-01 to be restored in orch2")
+	}
+	if claimRecord.Claim.NPPairID != "BAP-PG:BPP-PG" {
+		t.Errorf("Expected NPPairID BAP-PG:BPP-PG, got %s", claimRecord.Claim.NPPairID)
+	}
+
+	// Verify batch restored
+	restoredBatch, ok := orch2.GetBatch(batchID)
+	if !ok || restoredBatch == nil {
+		t.Fatalf("Expected batch %s to be restored in orch2", batchID)
+	}
+	if restoredBatch.Status != settlement.BatchStatusSettled {
+		t.Errorf("Expected restored batch status settled, got %s", restoredBatch.Status)
+	}
+	if restoredBatch.MatchedCount != 1 {
+		t.Errorf("Expected matched count 1, got %d", restoredBatch.MatchedCount)
+	}
+	if restoredBatch.NetPayoutPaise != 98400 {
+		t.Errorf("Expected net payout 98400 paise, got %d", restoredBatch.NetPayoutPaise)
+	}
+	if restoredBatch.TotalTaxPaise != 600 {
+		t.Errorf("Expected total tax 600 paise, got %d", restoredBatch.TotalTaxPaise)
+	}
+	if restoredBatch.MerkleRoot == "" {
+		t.Errorf("Expected non-empty MerkleRoot on restored batch")
+	}
+	if len(restoredBatch.Instructions) == 0 {
+		t.Errorf("Expected instructions to be restored for batch %s", batchID)
+	}
+
+	// 3. Verify Idempotent Replay on restored instance returns ACK without double-settlement
+	ackReplay, err := orch2.SubmitClaim(ctx, buyerClaim)
+	if err != nil {
+		t.Fatalf("Replay on restored orchestrator failed: %v", err)
+	}
+	if ackReplay.Message.Ack.Status != settlement.AckStatusACK {
+		t.Errorf("Expected ACK on replay, got %s", ackReplay.Message.Ack.Status)
+	}
+	if len(orch2.ListBatches()) != 1 {
+		t.Errorf("Expected still 1 batch after replay, got %d", len(orch2.ListBatches()))
 	}
 }

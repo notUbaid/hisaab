@@ -40,7 +40,7 @@ export function AppShell({ children }: AppShellProps) {
 
   // Health State
   const [isHealthy, setIsHealthy] = useState<boolean | null>(true);
-  const [healthLatencyMs, setHealthLatencyMs] = useState<number>(12);
+  const [healthLatencyMs, setHealthLatencyMs] = useState<number | null>(12);
 
   // Cmd+K Palette State
   const [isCmdKOpen, setIsCmdKOpen] = useState(false);
@@ -102,12 +102,17 @@ export function AppShell({ children }: AppShellProps) {
           body: JSON.stringify({ scenarioId: "ec-01", checkOnly: true }),
         });
         const elapsed = Math.round(performance.now() - start);
-        setHealthLatencyMs(Math.max(4, elapsed));
-        setIsHealthy(res.status < 500);
+        if (res.ok) {
+          setHealthLatencyMs(Math.max(4, elapsed));
+          setIsHealthy(true);
+        } else {
+          setIsHealthy(false);
+          setHealthLatencyMs(null);
+        }
       } catch {
-        // Fallback healthy if offline demo mode
-        setIsHealthy(true);
-        setHealthLatencyMs(8);
+        // An unavailable verification engine must be reported as unavailable, never passed
+        setIsHealthy(false);
+        setHealthLatencyMs(null);
       }
     };
 
@@ -264,13 +269,13 @@ export function AppShell({ children }: AppShellProps) {
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
                 )}
               </span>
-              <span className="text-slate-300">
-                {isHealthy ? "Core API Up" : "API Degraded"}
+              <span className={isHealthy ? "text-slate-300" : "text-rose-400 font-semibold"}>
+                {isHealthy ? "Core API Up" : "Engine Unavailable"}
               </span>
             </div>
             <div className="flex items-center gap-1 text-[10px] text-slate-500">
-              <Activity className="w-3 h-3 text-emerald-400" />
-              <span>{healthLatencyMs}ms</span>
+              <Activity className={`w-3 h-3 ${isHealthy ? "text-emerald-400" : "text-rose-500"}`} />
+              <span>{healthLatencyMs !== null ? `${healthLatencyMs}ms` : "Offline"}</span>
             </div>
           </div>
         </div>

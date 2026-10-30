@@ -137,11 +137,16 @@ func NewOrchestrator(
 	}
 }
 
-// SetPool assigns a PostgreSQL pool for persistent storage of claims, batches, and outbox.
+// SetPool assigns a PostgreSQL pool for persistent storage of claims, batches, and outbox,
+// and immediately restores persistent state from PostgreSQL.
 func (o *Orchestrator) SetPool(pool *pgxpool.Pool) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	o.pool = pool
+	o.mu.Unlock()
+
+	if pool != nil {
+		_ = o.RestoreFromPostgres(context.Background())
+	}
 }
 
 // SetTaxCalculator configures the statutory tax calculation engine.
@@ -206,16 +211,17 @@ func (o *Orchestrator) SubmitClaim(ctx context.Context, claim *SettleClaimPayloa
 			totalAmount += int64(ord.OrderAmountPaise)
 		}
 		var claimID int64
+		settleDateStr := time.Now().UTC().Format("2006-01-02")
 		err := o.pool.QueryRow(ctx, `
-			INSERT INTO claims (message_id, settlement_id, np_pair_id, submitted_by, collector_acc, receiver_acc, request_hash, order_count, total_amount_paise)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT (message_id) DO NOTHING
+			INSERT INTO claims (message_id, settlement_id, np_pair_id, settlement_date, submitted_by, collector_acc, receiver_acc, request_hash, order_count, total_amount_paise, raw_payload)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			ON CONFLICT (message_id) DO UPDATE SET raw_payload = EXCLUDED.raw_payload
 			RETURNING id
-		`, msgID, claim.SettlementID, claim.NPPairID, claim.SubmittedBy, claim.CollectorAcc, claim.ReceiverAcc, reqHash, len(claim.Orders), totalAmount).Scan(&claimID)
+		`, msgID, claim.SettlementID, claim.NPPairID, settleDateStr, claim.SubmittedBy, claim.CollectorAcc, claim.ReceiverAcc, reqHash, len(claim.Orders), totalAmount, rawBytes).Scan(&claimID)
 		if err == nil && claimID > 0 {
 			for _, ord := range claim.Orders {
 				_, _ = o.pool.Exec(ctx, `
-					INSERT INTO claim_lines (claim_id, network_order_id, order_amount_paise, commission_paise, bff_paise, sor_due_paise)
+					INSERT INTO claim_lines (claim_id, network_order_id, amount_paise, commission_paise, bff_paise, sor_due_paise)
 					VALUES ($1, $2, $3, $4, $5, $6)
 				`, claimID, ord.NetworkOrderID, int64(ord.OrderAmountPaise), int64(ord.CommissionPaise), int64(ord.BFFPaise), int64(ord.SoRDuePaise))
 			}
@@ -521,21 +527,24 @@ func (o *Orchestrator) executeBatchInternal(
 		if tree, mErr := audit.BuildMerkleTree(canonicalBytesRun); mErr == nil && tree != nil {
 			merkleRoot = tree.RootHex
 			_, _ = tx.Exec(ctx, `
-				INSERT INTO batch_roots (batch_id, root_hash, leaf_count, algorithm)
-				VALUES ($1, $2, $3, 'sha256')
-				ON CONFLICT (batch_id) DO UPDATE SET root_hash = EXCLUDED.root_hash
-			`, batchID, merkleRoot, len(canonicalBytesRun))
+				INSERT INTO batch_roots (batch_id, root_hash, leaf_count, algorithm, np_pair_id)
+				VALUES ($1, $2, $3, 'sha256', $4)
+				ON CONFLICT (batch_id) DO UPDATE SET root_hash = EXCLUDED.root_hash, leaf_count = EXCLUDED.leaf_count
+			`, batchID, merkleRoot, len(canonicalBytesRun), buyerClaim.NPPairID)
 		}
 
 		settleDateOnly, _ := time.Parse("2006-01-02", settleDate.Format("2006-01-02"))
 		_, err = tx.Exec(ctx, `
-			INSERT INTO settlement_batches (batch_id, np_pair_id, settlement_date, status, matched_count, unmatched_count, total_gross_paise, net_payout_paise, total_tax_paise, run_id, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			INSERT INTO settlement_batches (batch_id, np_pair_id, settlement_date, status, matched_count, unmatched_count, total_gross_paise, net_payout_paise, total_tax_paise, tds_paise, gst_tcs_paise, merkle_root, run_id, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		`, batchID, buyerClaim.NPPairID, settleDateOnly, string(finalBatchStatus), matchedCount, unmatchedCount,
-			int64(totalGrossMatched), int64(netSellerPayout), int64(totalTaxDeductions), runID, now)
+			int64(totalGrossMatched), int64(netSellerPayout), int64(totalTaxDeductions), int64(totalTDS), int64(totalTCS), merkleRoot, runID, now)
 		if err != nil {
 			return fmt.Errorf("orchestrator: insert settlement_batches failed: %w", err)
 		}
+
+		// Mark counterpart claims as settled in persistent store
+		_, _ = tx.Exec(ctx, `UPDATE claims SET status = 'settled' WHERE message_id IN ($1, $2)`, buyerClaim.Context.MessageID, sellerClaim.Context.MessageID)
 
 		// Post double-entry lines atomically inside this transaction
 		if pgLedger, ok := o.ledger.(*ledger.Ledger); ok {
@@ -660,9 +669,274 @@ func (o *Orchestrator) executeBatchInternal(
 // GetBatch returns summary details of an executed settlement batch.
 func (o *Orchestrator) GetBatch(batchID string) (*BatchSummary, bool) {
 	o.mu.RLock()
-	defer o.mu.RUnlock()
 	b, ok := o.batches[batchID]
-	return b, ok
+	pool := o.pool
+	o.mu.RUnlock()
+
+	if ok {
+		return b, true
+	}
+
+	if pool == nil {
+		return nil, false
+	}
+
+	// Fallback to live PostgreSQL lookup if not cached in memory
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var npPairID, status, merkleRoot string
+	var settleDate, createdAt time.Time
+	var completedAt *time.Time
+	var matchedCount, unmatchedCount int
+	var totalGross, netPayout, totalTax, tds, gstTcs int64
+
+	err := pool.QueryRow(ctx, `
+		SELECT np_pair_id, settlement_date, status, matched_count, unmatched_count,
+		       total_gross_paise, net_payout_paise, total_tax_paise, tds_paise, gst_tcs_paise,
+		       merkle_root, created_at, completed_at
+		FROM settlement_batches
+		WHERE batch_id = $1
+		LIMIT 1
+	`, batchID).Scan(&npPairID, &settleDate, &status, &matchedCount, &unmatchedCount,
+		&totalGross, &netPayout, &totalTax, &tds, &gstTcs, &merkleRoot, &createdAt, &completedAt)
+	if err != nil {
+		return nil, false
+	}
+
+	var insts []NetInstruction
+	instRows, iErr := pool.Query(ctx, `
+		SELECT from_account, to_account, amount_paise
+		FROM instructions
+		WHERE batch_id = $1
+	`, batchID)
+	if iErr == nil {
+		defer instRows.Close()
+		for instRows.Next() {
+			var fromAcc, toAcc string
+			var amt int64
+			if instRows.Scan(&fromAcc, &toAcc, &amt) == nil {
+				insts = append(insts, NetInstruction{
+					FromAccount: fromAcc,
+					ToAccount:   toAcc,
+					AmountPaise: ledger.AmountPaise(amt),
+					BatchID:     batchID,
+				})
+			}
+		}
+	}
+
+	summary := &BatchSummary{
+		BatchID:         batchID,
+		NPPairID:        npPairID,
+		SettlementDate:  settleDate.Format("2006-01-02"),
+		Status:          BatchStatus(status),
+		MatchedCount:    matchedCount,
+		UnmatchedCount:  unmatchedCount,
+		TotalGrossPaise: ledger.AmountPaise(totalGross),
+		NetPayoutPaise:  ledger.AmountPaise(netPayout),
+		TotalTaxPaise:   ledger.AmountPaise(totalTax),
+		TDSPaise:        ledger.AmountPaise(tds),
+		GSTTCSPaise:     ledger.AmountPaise(gstTcs),
+		MerkleRoot:      merkleRoot,
+		Instructions:    insts,
+		CreatedAt:       createdAt,
+		SettledAt:       completedAt,
+	}
+
+	o.mu.Lock()
+	o.batches[batchID] = summary
+	o.mu.Unlock()
+
+	return summary, true
+}
+
+// GetClaim retrieves a stored claim by message_id.
+func (o *Orchestrator) GetClaim(messageID string) (*StoredClaimRecord, bool) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	c, ok := o.claimsByID[messageID]
+	return c, ok
+}
+
+// ListClaims returns all stored claim records.
+func (o *Orchestrator) ListClaims() []*StoredClaimRecord {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	res := make([]*StoredClaimRecord, 0, len(o.claimsByID))
+	for _, c := range o.claimsByID {
+		res = append(res, c)
+	}
+	return res
+}
+
+// RestoreFromPostgres hydrates claims, pending counterpart pairings, and batch summaries
+// from PostgreSQL to ensure crash resilience and continuity across service restarts.
+func (o *Orchestrator) RestoreFromPostgres(ctx context.Context) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if o.pool == nil {
+		return nil
+	}
+
+	// 1. Restore claims from PostgreSQL
+	claimRows, err := o.pool.Query(ctx, `
+		SELECT message_id, settlement_id, np_pair_id, submitted_by, collector_acc, receiver_acc,
+		       request_hash, raw_payload, received_at, status
+		FROM claims
+		ORDER BY id ASC
+	`)
+	if err == nil {
+		defer claimRows.Close()
+		for claimRows.Next() {
+			var msgID, settleID, npPairID, submittedBy, collectorAcc, receiverAcc, reqHash, status string
+			var rawPayload []byte
+			var receivedAt time.Time
+
+			if err := claimRows.Scan(&msgID, &settleID, &npPairID, &submittedBy, &collectorAcc, &receiverAcc,
+				&reqHash, &rawPayload, &receivedAt, &status); err == nil {
+
+				var claim SettleClaimPayload
+				if len(rawPayload) > 0 && json.Valid(rawPayload) {
+					_ = json.Unmarshal(rawPayload, &claim)
+				}
+				if claim.Context == nil {
+					claim.Context = &BecknContext{
+						MessageID: msgID,
+						Timestamp: receivedAt,
+					}
+				}
+				claim.SettlementID = settleID
+				claim.NPPairID = npPairID
+				claim.SubmittedBy = submittedBy
+				if claim.CollectorAcc == "" {
+					claim.CollectorAcc = collectorAcc
+				}
+				if claim.ReceiverAcc == "" {
+					claim.ReceiverAcc = receiverAcc
+				}
+
+				// Reconstruct lines if claim.Orders was empty
+				if len(claim.Orders) == 0 {
+					lineRows, lErr := o.pool.Query(ctx, `
+						SELECT cl.network_order_id, cl.amount_paise, cl.commission_paise, cl.bff_paise, cl.sor_due_paise
+						FROM claim_lines cl
+						JOIN claims c ON cl.claim_id = c.id
+						WHERE c.message_id = $1
+					`, msgID)
+					if lErr == nil {
+						for lineRows.Next() {
+							var ordID string
+							var amt, comm, bff, sor int64
+							if lineRows.Scan(&ordID, &amt, &comm, &bff, &sor) == nil {
+								claim.Orders = append(claim.Orders, OrderSettlementLine{
+									NetworkOrderID:  ordID,
+									OrderAmountPaise: ledger.AmountPaise(amt),
+									CommissionPaise:  ledger.AmountPaise(comm),
+									BFFPaise:         ledger.AmountPaise(bff),
+									SoRDuePaise:      ledger.AmountPaise(sor),
+								})
+							}
+						}
+						lineRows.Close()
+					}
+				}
+
+				ack := AckResponse{Context: claim.Context}
+				ack.Message.Ack.Status = AckStatusACK
+
+				record := &StoredClaimRecord{
+					MessageID:   msgID,
+					RequestHash: reqHash,
+					Claim:       claim,
+					AckResponse: ack,
+					ReceivedAt:  receivedAt,
+				}
+				o.claimsByID[msgID] = record
+
+				// If not yet settled, keep in claimsByPair for counterpart matching
+				if status != "settled" {
+					pairKey := fmt.Sprintf("%s|%s", claim.NPPairID, claim.SettlementID)
+					if claim.SettlementID == "" {
+						pairKey = fmt.Sprintf("%s|default", claim.NPPairID)
+					}
+					roleMap, ok := o.claimsByPair[pairKey]
+					if !ok {
+						roleMap = make(map[string]*SettleClaimPayload)
+						o.claimsByPair[pairKey] = roleMap
+					}
+					roleMap[claim.SubmittedBy] = &claim
+				}
+			}
+		}
+	}
+
+	// 2. Restore settlement batches from PostgreSQL
+	batchRows, err := o.pool.Query(ctx, `
+		SELECT batch_id, np_pair_id, settlement_date, status, matched_count, unmatched_count,
+		       total_gross_paise, net_payout_paise, total_tax_paise, tds_paise, gst_tcs_paise,
+		       merkle_root, created_at, completed_at
+		FROM settlement_batches
+		ORDER BY id ASC
+	`)
+	if err == nil {
+		defer batchRows.Close()
+		for batchRows.Next() {
+			var batchID, npPairID, status, merkleRoot string
+			var settleDate, createdAt time.Time
+			var completedAt *time.Time
+			var matchedCount, unmatchedCount int
+			var totalGross, netPayout, totalTax, tds, gstTcs int64
+
+			if err := batchRows.Scan(&batchID, &npPairID, &settleDate, &status, &matchedCount, &unmatchedCount,
+				&totalGross, &netPayout, &totalTax, &tds, &gstTcs, &merkleRoot, &createdAt, &completedAt); err == nil {
+
+				var insts []NetInstruction
+				instRows, iErr := o.pool.Query(ctx, `
+					SELECT from_account, to_account, amount_paise
+					FROM instructions
+					WHERE batch_id = $1
+				`, batchID)
+				if iErr == nil {
+					for instRows.Next() {
+						var fromAcc, toAcc string
+						var amt int64
+						if instRows.Scan(&fromAcc, &toAcc, &amt) == nil {
+							insts = append(insts, NetInstruction{
+								FromAccount: fromAcc,
+								ToAccount:   toAcc,
+								AmountPaise: ledger.AmountPaise(amt),
+								BatchID:     batchID,
+							})
+						}
+					}
+					instRows.Close()
+				}
+
+				summary := &BatchSummary{
+					BatchID:         batchID,
+					NPPairID:        npPairID,
+					SettlementDate:  settleDate.Format("2006-01-02"),
+					Status:          BatchStatus(status),
+					MatchedCount:    matchedCount,
+					UnmatchedCount:  unmatchedCount,
+					TotalGrossPaise: ledger.AmountPaise(totalGross),
+					NetPayoutPaise:  ledger.AmountPaise(netPayout),
+					TotalTaxPaise:   ledger.AmountPaise(totalTax),
+					TDSPaise:        ledger.AmountPaise(tds),
+					GSTTCSPaise:     ledger.AmountPaise(gstTcs),
+					MerkleRoot:      merkleRoot,
+					Instructions:    insts,
+					CreatedAt:       createdAt,
+					SettledAt:       completedAt,
+				}
+				o.batches[batchID] = summary
+			}
+		}
+	}
+
+	return nil
 }
 
 // ListBatches returns all known settlement batches.

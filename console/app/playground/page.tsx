@@ -74,6 +74,7 @@ export default function PlaygroundPage() {
   });
 
   const [chaosTestResult, setChaosTestResult] = useState<string | null>(null);
+  const [isChaosError, setIsChaosError] = useState(false);
   const [isSimulatingChaos, setIsSimulatingChaos] = useState(false);
 
   // Run JSON schema validation against ONDC RSF 2.0 specs
@@ -138,6 +139,7 @@ export default function PlaygroundPage() {
   const handleRunChaosTest = async () => {
     setIsSimulatingChaos(true);
     setChaosTestResult(null);
+    setIsChaosError(false);
 
     // Identify active failpoint
     const activeFailpointKey = Object.entries(failpoints).find(([_, active]) => active)?.[0] || "FP_NONE";
@@ -154,13 +156,22 @@ export default function PlaygroundPage() {
       });
       const data = await res.json();
       setIsSimulatingChaos(false);
-      setChaosTestResult(
-        `Chaos Handled Safely: Ledger Rolled Back Atomically. Invariant 4 Protected (Zero-Sum Intact).`
-      );
+      if (res.ok && data.passed) {
+        setIsChaosError(false);
+        setChaosTestResult(
+          `Chaos Handled Safely: Ledger Rolled Back Atomically. Invariant 4 Protected (Zero-Sum Intact).`
+        );
+      } else {
+        setIsChaosError(true);
+        setChaosTestResult(
+          `Verification Failed: ${data.error || "Simulation rejected unhandled state"}`
+        );
+      }
     } catch {
       setIsSimulatingChaos(false);
+      setIsChaosError(true);
       setChaosTestResult(
-        `Crash Intercepted: Invariant 4 preserved. State machine rejected uncommitted state.`
+        "Verification Engine Unavailable: Could not execute failpoint check (Offline)."
       );
     }
   };
@@ -376,8 +387,18 @@ export default function PlaygroundPage() {
           </div>
 
           {chaosTestResult && (
-            <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300 flex items-center gap-2 animate-in fade-in">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <div
+              className={`p-3 rounded-lg border text-xs font-mono flex items-center gap-2 animate-in fade-in ${
+                isChaosError
+                  ? "bg-rose-500/10 border-rose-500/30 text-rose-300"
+                  : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+              }`}
+            >
+              {isChaosError ? (
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              )}
               <span>{chaosTestResult}</span>
             </div>
           )}
