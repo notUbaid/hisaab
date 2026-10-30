@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState } from "react";
-import { ShieldCheck, GitCommit, CheckCircle2, Copy, Check, X, Lock } from "lucide-react";
+import { ShieldCheck, GitCommit, CheckCircle2, Copy, Check, X, Lock, AlertTriangle, RotateCw } from "lucide-react";
+import { apiClient } from "@/lib/apiClient";
 
 interface MerkleBadgeProps {
   rootHash: string;
@@ -14,22 +15,55 @@ interface MerkleBadgeProps {
 export function MerkleBadge({
   rootHash,
   leavesCount,
-  verified = true,
   signatureEd25519,
   batchId = "BATCH-20261030-01",
 }: MerkleBadgeProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
-  const [verifiedPath, setVerifiedPath] = useState(false);
+  const [verificationStatus, setVerificationStatus] = useState<"UNVERIFIED" | "VERIFIED" | "FAILED">("UNVERIFIED");
+  const [verificationDetails, setVerificationDetails] = useState<string | null>(null);
   const [isCopied, setIsCopied] = useState(false);
 
-  const handleVerifyProof = () => {
+  // Authentically verify the RFC 6962 Merkle proof chain by calling the server-side audit verifier
+  const handleVerifyProof = async () => {
     setIsVerifying(true);
-    setVerifiedPath(false);
-    setTimeout(() => {
+    setVerificationDetails(null);
+
+    try {
+      const cleanRoot = rootHash.replace(/^sha256:/, "");
+      const res = await apiClient.post<{
+        verified: boolean;
+        inclusionVerified: boolean;
+        rootMatchesClaimed: boolean;
+        rootHash: string;
+        claimedRoot: string;
+        invariantsPassed: number;
+        totalInvariants: number;
+        auditPath: { hash: string; direction: "left" | "right" }[];
+        error?: string;
+      }>("/api/audit/verify", {
+        batchId,
+        claimedRoot: cleanRoot,
+        leafIndex: 0,
+      });
+
+      if (res.inclusionVerified) {
+        setVerificationStatus("VERIFIED");
+        setVerificationDetails(
+          `RFC 6962 inclusion proof verified: Leaf 0 (${res.auditPath.length} sibling hashes) correctly ties to root ${res.rootHash.slice(0, 12)}...`
+        );
+      } else {
+        setVerificationStatus("FAILED");
+        setVerificationDetails(
+          `Cryptographic Verification Failed: Reconstructed root does not match claimed batch root.`
+        );
+      }
+    } catch (err: any) {
+      setVerificationStatus("FAILED");
+      setVerificationDetails(`Verification Error: ${err.message || "Audit engine unavailable"}`);
+    } finally {
       setIsVerifying(false);
-      setVerifiedPath(true);
-    }, 600);
+    }
   };
 
   const copyToClipboard = (text: string) => {
@@ -38,9 +72,9 @@ export function MerkleBadge({
     setTimeout(() => setIsCopied(false), 2000);
   };
 
-  // Truncated hash for badge display
-  const shortHash = rootHash
-    ? `${rootHash.slice(0, 8)}...${rootHash.slice(-8)}`
+  const cleanHash = rootHash ? rootHash.replace(/^sha256:/, "") : "";
+  const shortHash = cleanHash
+    ? `${cleanHash.slice(0, 8)}...${cleanHash.slice(-8)}`
     : "96657a38...03777cb";
 
   return (
@@ -48,14 +82,36 @@ export function MerkleBadge({
       {/* ── Visual Badge / Pill Trigger ── */}
       <div
         onClick={() => setIsModalOpen(true)}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-obsidian-900 border border-emerald-500/30 hover:border-emerald-500/50 text-emerald-400 font-mono text-xs cursor-pointer transition shadow-glow select-none group"
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-obsidian-900 border ${
+          verificationStatus === "VERIFIED"
+            ? "border-emerald-500/40 text-emerald-400"
+            : verificationStatus === "FAILED"
+            ? "border-rose-500/40 text-rose-400"
+            : "border-white/10 text-slate-300 hover:border-emerald-500/30"
+        } font-mono text-xs cursor-pointer transition select-none group`}
         title="Click to view & verify RFC 6962 Cryptographic Inclusion Proof"
       >
-        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
+        <ShieldCheck
+          className={`w-3.5 h-3.5 ${
+            verificationStatus === "VERIFIED"
+              ? "text-emerald-400"
+              : verificationStatus === "FAILED"
+              ? "text-rose-400"
+              : "text-slate-400 group-hover:text-emerald-400"
+          } group-hover:scale-110 transition-transform`}
+        />
         <span className="font-semibold text-white">Merkle:</span>
-        <span className="text-emerald-300">{shortHash}</span>
-        <span className="text-[10px] px-1 py-0.2 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-          {leavesCount} leaves
+        <span className="text-slate-300 font-mono">{shortHash}</span>
+        <span
+          className={`text-[10px] px-1 py-0.2 rounded border ${
+            verificationStatus === "VERIFIED"
+              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+              : verificationStatus === "FAILED"
+              ? "bg-rose-500/10 border-rose-500/20 text-rose-400"
+              : "bg-white/5 border-white/10 text-slate-400"
+          }`}
+        >
+          {verificationStatus === "VERIFIED" ? "Verified ✓" : `${leavesCount} leaves`}
         </span>
       </div>
 
@@ -72,13 +128,29 @@ export function MerkleBadge({
             {/* Modal Header */}
             <div className="p-4 border-b border-white/10 flex items-center justify-between bg-obsidian-900/80">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                <div
+                  className={`w-8 h-8 rounded-lg ${
+                    verificationStatus === "VERIFIED"
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                      : verificationStatus === "FAILED"
+                      ? "bg-rose-500/10 border-rose-500/30 text-rose-400"
+                      : "bg-obsidian-900 border-white/10 text-slate-400"
+                  } border flex items-center justify-center`}
+                >
                   <Lock className="w-4 h-4" />
                 </div>
                 <div>
                   <h3 className="font-bold text-sm text-white flex items-center gap-2">
                     RFC 6962 Merkle Tree Audit Proof
-                    <span className="pill-emerald text-[9px]">Verified</span>
+                    {verificationStatus === "VERIFIED" && (
+                      <span className="pill-emerald text-[9px]">Verified</span>
+                    )}
+                    {verificationStatus === "FAILED" && (
+                      <span className="pill-rose text-[9px]">Verification Failed</span>
+                    )}
+                    {verificationStatus === "UNVERIFIED" && (
+                      <span className="pill-amber text-[9px]">Unverified</span>
+                    )}
                   </h3>
                   <div className="text-[11px] font-mono text-slate-400 mt-0.5">
                     Batch: <span className="text-slate-200">{batchId}</span> · Domain Separation: 0x00 (leaf) / 0x01 (node)
@@ -97,14 +169,30 @@ export function MerkleBadge({
             {/* Modal Body: Interactive Tree Diagram */}
             <div className="p-5 space-y-5 text-xs font-mono">
               {/* Root Node */}
-              <div className="p-3.5 rounded-lg bg-obsidian-900 border border-emerald-500/30 shadow-glow space-y-2">
+              <div
+                className={`p-3.5 rounded-lg bg-obsidian-900 border ${
+                  verificationStatus === "VERIFIED"
+                    ? "border-emerald-500/40"
+                    : verificationStatus === "FAILED"
+                    ? "border-rose-500/40"
+                    : "border-white/10"
+                } space-y-2`}
+              >
                 <div className="flex items-center justify-between text-[10px] text-slate-400 uppercase tracking-wider">
-                  <span className="text-emerald-400 font-bold flex items-center gap-1">
+                  <span
+                    className={`font-bold flex items-center gap-1 ${
+                      verificationStatus === "VERIFIED"
+                        ? "text-emerald-400"
+                        : verificationStatus === "FAILED"
+                        ? "text-rose-400"
+                        : "text-slate-300"
+                    }`}
+                  >
                     <ShieldCheck className="w-3.5 h-3.5" />
                     Merkle Root (Level 2)
                   </span>
                   <button
-                    onClick={() => copyToClipboard(rootHash)}
+                    onClick={() => copyToClipboard(cleanHash)}
                     className="flex items-center gap-1 text-slate-400 hover:text-white"
                   >
                     {isCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
@@ -112,7 +200,7 @@ export function MerkleBadge({
                   </button>
                 </div>
                 <div className="text-xs text-white break-all bg-obsidian-950 p-2 rounded border border-white/5 font-semibold">
-                  {rootHash}
+                  {cleanHash}
                 </div>
               </div>
 
@@ -168,6 +256,26 @@ export function MerkleBadge({
                 </div>
               </div>
 
+              {/* Verification Details Alert */}
+              {verificationDetails && (
+                <div
+                  className={`p-3 rounded-lg border text-xs font-mono ${
+                    verificationStatus === "VERIFIED"
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+                      : "bg-rose-500/10 border-rose-500/30 text-rose-300"
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    {verificationStatus === "VERIFIED" ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    )}
+                    <span>{verificationDetails}</span>
+                  </div>
+                </div>
+              )}
+
               {/* Ed25519 Network Signature Info */}
               {signatureEd25519 && (
                 <div className="pt-3 border-t border-white/10 space-y-1">
@@ -184,9 +292,13 @@ export function MerkleBadge({
             {/* Modal Footer Controls */}
             <div className="p-4 border-t border-white/10 bg-obsidian-900/90 flex items-center justify-between">
               <div className="text-[11px] font-mono text-slate-400">
-                {verifiedPath ? (
+                {verificationStatus === "VERIFIED" ? (
                   <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4" /> Inclusion path verified against root
+                  </span>
+                ) : verificationStatus === "FAILED" ? (
+                  <span className="text-rose-400 font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4" /> Proof verification failed
                   </span>
                 ) : (
                   <span>Ready to verify proof chain</span>
@@ -196,12 +308,12 @@ export function MerkleBadge({
               <button
                 onClick={handleVerifyProof}
                 disabled={isVerifying}
-                className="py-1.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition flex items-center gap-2 shadow-glow"
+                className="py-1.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-xs transition flex items-center gap-2 shadow-glow"
               >
                 {isVerifying ? (
                   <>
-                    <span className="animate-spin text-sm">⟳</span>
-                    <span>Tracing Path...</span>
+                    <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Verifying Proof...</span>
                   </>
                 ) : (
                   <>

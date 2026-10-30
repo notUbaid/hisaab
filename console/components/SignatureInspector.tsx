@@ -155,16 +155,34 @@ export function SignatureInspector({
           {/* Compliance Status Checks */}
           <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-300 pt-1 border-t border-white/5">
             <div className="flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-              <span>BLAKE-512 Digest Match</span>
+              {isVerified ? (
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              ) : (
+                <AlertTriangle className="w-3 h-3 text-rose-400" />
+              )}
+              <span className={isVerified ? "text-slate-300" : "text-rose-400 font-semibold"}>
+                {isVerified ? "BLAKE-512 Digest Match" : "Digest Mismatch"}
+              </span>
             </div>
             <div className="flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-              <span>Clock-Skew &lt; 300s</span>
+              {isClockSkewSafe && !isExpired ? (
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              ) : (
+                <AlertTriangle className="w-3 h-3 text-rose-400" />
+              )}
+              <span className={isClockSkewSafe && !isExpired ? "text-slate-300" : "text-rose-400 font-semibold"}>
+                {isExpired ? "TTL Expired (>300s)" : "Clock-Skew < 300s"}
+              </span>
             </div>
             <div className="flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-              <span>ONDC Registry Key Valid</span>
+              {isVerified ? (
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              ) : (
+                <AlertTriangle className="w-3 h-3 text-amber-400" />
+              )}
+              <span className={isVerified ? "text-slate-300" : "text-amber-400"}>
+                {isVerified ? "ONDC Registry Key Valid" : "Unverified Key Identity"}
+              </span>
             </div>
           </div>
         </div>

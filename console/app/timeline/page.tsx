@@ -17,6 +17,7 @@ import {
   RotateCw,
   ExternalLink,
   KeyRound,
+  AlertTriangle,
 } from "lucide-react";
 import MoneyCell from "@/components/MoneyCell";
 import { MerkleBadge } from "@/components/MerkleBadge";
@@ -33,9 +34,13 @@ export default function TimelinePage() {
   const [isVerifyingProof, setIsVerifyingProof] = useState<boolean>(false);
   const [proofVerification, setProofVerification] = useState<{
     verified: boolean;
+    inclusionVerified?: boolean;
     invariantsPassed: number;
+    totalInvariants?: number;
     latencyMs: number;
     rootHash: string;
+    claimedRoot?: string;
+    error?: string;
   } | null>(null);
 
   const scenario = SCENARIOS_DATA.find((s) => s.id === selectedScenarioId) || SCENARIOS_DATA[0];
@@ -45,20 +50,28 @@ export default function TimelinePage() {
     try {
       const res = await apiClient.post<{
         verified: boolean;
+        inclusionVerified: boolean;
         invariantsPassed: number;
+        totalInvariants: number;
         latencyMs: number;
         rootHash: string;
+        claimedRoot: string;
       }>("/api/audit/verify", {
         scenarioId: scenario.id,
+        claimedRoot: scenario.merkleAudit.rootHash,
         checkInvariants: true,
       });
       setProofVerification(res);
-    } catch {
+    } catch (err: any) {
       setProofVerification({
-        verified: true,
-        invariantsPassed: 14,
-        latencyMs: 14,
+        verified: false,
+        inclusionVerified: false,
+        invariantsPassed: 0,
+        totalInvariants: 5,
+        latencyMs: 0,
         rootHash: scenario.merkleAudit.rootHash,
+        claimedRoot: scenario.merkleAudit.rootHash,
+        error: `Verification Engine Offline: ${err.message || "Failed to contact verifier"}`,
       });
     } finally {
       setIsVerifyingProof(false);
@@ -226,15 +239,27 @@ export default function TimelinePage() {
       </div>
 
       {proofVerification && (
-        <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300 flex items-center justify-between animate-in fade-in">
+        <div
+          className={`p-3.5 rounded-xl border text-xs font-mono flex items-center justify-between animate-in fade-in ${
+            proofVerification.verified
+              ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+              : "bg-rose-500/10 border-rose-500/30 text-rose-300"
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            {proofVerification.verified ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            )}
             <span>
-              Cryptographic Proof Verified: {proofVerification.invariantsPassed}/14 Zero-Sum Invariants Intact ({proofVerification.latencyMs}ms)
+              {proofVerification.verified
+                ? `Cryptographic Proof Verified: ${proofVerification.invariantsPassed}/${proofVerification.totalInvariants || 5} Invariants Intact (${proofVerification.latencyMs}ms)`
+                : `Verification Failed: ${proofVerification.error || "Invariants or Merkle root mismatch"}`}
             </span>
           </div>
           <span className="text-[10px] text-slate-400">
-            Audit Path Leaf 0x3f.. Confirmed by RFC 6962
+            {proofVerification.verified ? "RFC 6962 Inclusion Chain Valid" : "Audit Invariant Violation"}
           </span>
         </div>
       )}

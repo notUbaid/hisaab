@@ -351,7 +351,11 @@ export function ReconDiffDrawer({
           bppId="seller-app.ondc.org"
           createdTimestamp={new Date(Date.now() - 3600000).toISOString()}
           expiresTimestamp={new Date(Date.now() + 1800000).toISOString()}
-          isVerified={true}
+          isVerified={
+            !exception.class.toLowerCase().includes("signature") &&
+            !exception.class.toLowerCase().includes("digest") &&
+            !exception.class.toLowerCase().includes("auth")
+          }
         />
       </div>
 
