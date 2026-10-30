@@ -125,17 +125,6 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		return nil, errors.New("ledger: postgres pool is nil")
 	}
 
-	totalPaise, err := ValidateLines(req.Lines)
-	if err != nil {
-		return nil, fmt.Errorf("ledger.Post: validation failed: %w", err)
-	}
-
-	reqHash := ComputeRequestHash(req)
-	if req.RequestHash != "" && req.RequestHash != reqHash {
-		return nil, fmt.Errorf("%w: caller supplied request hash mismatch", ErrDuplicateIdempotency)
-	}
-
-	// 1. Begin Database Transaction (READ COMMITTED)
 	tx, err := l.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ledger.Post: begin tx failed: %w", err)
@@ -144,7 +133,35 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		_ = tx.Rollback(ctx)
 	}()
 
-	// 2. Insert-First Idempotency Check INSIDE Transaction (Appendix B.2)
+	res, err := l.PostTx(ctx, tx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("ledger.Post: commit failed: %w", err)
+	}
+
+	return res, nil
+}
+
+// PostTx executes double-entry postings inside the caller's transaction, enabling atomic ledger + outbox execution (Inv-11).
+func (l *Ledger) PostTx(ctx context.Context, tx pgx.Tx, req PostRequest) (*PostResult, error) {
+	if tx == nil {
+		return nil, errors.New("ledger: tx is nil")
+	}
+
+	totalPaise, err := ValidateLines(req.Lines)
+	if err != nil {
+		return nil, fmt.Errorf("ledger.PostTx: validation failed: %w", err)
+	}
+
+	reqHash := ComputeRequestHash(req)
+	if req.RequestHash != "" && req.RequestHash != reqHash {
+		return nil, fmt.Errorf("%w: caller supplied request hash mismatch", ErrDuplicateIdempotency)
+	}
+
+	// 1. Insert-First Idempotency Check INSIDE Transaction (Appendix B.2)
 	// Concurrent duplicate requests block on the unique index until this transaction commits or rolls back.
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO idempotency_keys (key, request_hash, status)
@@ -152,7 +169,7 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		ON CONFLICT (key) DO NOTHING
 	`, req.IdempotencyKey, reqHash)
 	if err != nil {
-		return nil, fmt.Errorf("ledger.Post: idempotency insert failed: %w", err)
+		return nil, fmt.Errorf("ledger.PostTx: idempotency insert failed: %w", err)
 	}
 
 	if tag.RowsAffected() == 0 {
@@ -166,7 +183,7 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 			WHERE key = $1
 		`, req.IdempotencyKey).Scan(&storedHash, &storedResponse, &status)
 		if err != nil {
-			return nil, fmt.Errorf("ledger.Post: read existing idempotency key failed: %w", err)
+			return nil, fmt.Errorf("ledger.PostTx: read existing idempotency key failed: %w", err)
 		}
 
 		if storedHash != reqHash {
@@ -177,15 +194,15 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		if len(storedResponse) > 0 {
 			var storedResult PostResult
 			if err := json.Unmarshal(storedResponse, &storedResult); err != nil {
-				return nil, fmt.Errorf("ledger.Post: unmarshal cached response failed: %w", err)
+				return nil, fmt.Errorf("ledger.PostTx: unmarshal cached response failed: %w", err)
 			}
 			return &storedResult, nil
 		}
 
-		return nil, fmt.Errorf("ledger.Post: key %q is currently in progress", req.IdempotencyKey)
+		return nil, fmt.Errorf("ledger.PostTx: key %q is currently in progress", req.IdempotencyKey)
 	}
 
-	// 3. Resolve Accounts and build ID lookup
+	// 2. Resolve Accounts and build ID lookup
 	accountNames := make([]string, 0, len(req.Lines))
 	for _, line := range req.Lines {
 		accountNames = append(accountNames, line.AccountName)
@@ -197,7 +214,7 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		WHERE name = ANY($1)
 	`, accountNames)
 	if err != nil {
-		return nil, fmt.Errorf("ledger.Post: account query failed: %w", err)
+		return nil, fmt.Errorf("ledger.PostTx: account query failed: %w", err)
 	}
 	defer rows.Close()
 
@@ -206,13 +223,13 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 	for rows.Next() {
 		var acc Account
 		if err := rows.Scan(&acc.ID, &acc.Name, &acc.Type, &acc.Currency, &acc.Constrained, &acc.CreatedAt); err != nil {
-			return nil, fmt.Errorf("ledger.Post: account scan failed: %w", err)
+			return nil, fmt.Errorf("ledger.PostTx: account scan failed: %w", err)
 		}
 		accountMap[acc.Name] = acc
 		accountMapByID[acc.ID] = acc
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ledger.Post: account rows iteration error: %w", err)
+		return nil, fmt.Errorf("ledger.PostTx: account rows iteration error: %w", err)
 	}
 
 	for _, name := range accountNames {
@@ -221,7 +238,7 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		}
 	}
 
-	// 4. Calculate Net Balance Deltas per Account
+	// 3. Calculate Net Balance Deltas per Account
 	accountDeltas := make(map[int64]int64)
 	for _, line := range req.Lines {
 		acc := accountMap[line.AccountName]
@@ -232,7 +249,7 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		}
 	}
 
-	// 5. Update Balances in Ascending account_id order (Deadlock-Free Row Locks & CHECK constraint)
+	// 4. Update Balances in Ascending account_id order (Deadlock-Free Row Locks & CHECK constraint)
 	touchedIDs := make([]int64, 0, len(accountDeltas))
 	for id := range accountDeltas {
 		touchedIDs = append(touchedIDs, id)
@@ -245,23 +262,33 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		delta := accountDeltas[accID]
 		acc := accountMapByID[accID]
 
+		// Ensure row exists in account_balances with initial 0
 		_, err := tx.Exec(ctx, `
 			INSERT INTO account_balances (account_id, constrained, balance_paise)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (account_id) DO UPDATE
-			SET balance_paise = account_balances.balance_paise + EXCLUDED.balance_paise
-		`, accID, acc.Constrained, delta)
+			VALUES ($1, $2, 0)
+			ON CONFLICT (account_id) DO NOTHING
+		`, accID, acc.Constrained)
+		if err != nil {
+			return nil, fmt.Errorf("ledger.PostTx: ensure balance row failed for %s: %w", acc.Name, err)
+		}
+
+		// Update balance with delta. If constrained and balance becomes negative, CHECK constraint raises SQLSTATE 23514
+		_, err = tx.Exec(ctx, `
+			UPDATE account_balances
+			SET balance_paise = balance_paise + $1
+			WHERE account_id = $2
+		`, delta, accID)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23514" { // check_violation
 				return nil, fmt.Errorf("%w: account %q constrained balance would become negative",
 					ErrNegativeBalance, acc.Name)
 			}
-			return nil, fmt.Errorf("ledger.Post: balance update failed for %s: %w", acc.Name, err)
+			return nil, fmt.Errorf("ledger.PostTx: balance update failed for %s: %w", acc.Name, err)
 		}
 	}
 
-	// 6. Record Journal Transaction & Entries
+	// 5. Record Journal Transaction & Entries
 	postedAt := req.PostedAt
 	if postedAt.IsZero() {
 		postedAt = time.Now().UTC()
@@ -274,7 +301,7 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 		RETURNING id
 	`, req.IdempotencyKey, req.Description, string(req.CauseType), req.CauseID, postedAt).Scan(&txID)
 	if err != nil {
-		return nil, fmt.Errorf("ledger.Post: insert journal_transactions failed: %w", err)
+		return nil, fmt.Errorf("ledger.PostTx: insert journal_transactions failed: %w", err)
 	}
 
 	for _, line := range req.Lines {
@@ -284,7 +311,7 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 			VALUES ($1, $2, $3, $4, $5)
 		`, txID, acc.ID, string(line.Direction), int64(line.AmountPaise), postedAt)
 		if err != nil {
-			return nil, fmt.Errorf("ledger.Post: insert journal_entries failed: %w", err)
+			return nil, fmt.Errorf("ledger.PostTx: insert journal_entries failed: %w", err)
 		}
 	}
 
@@ -298,22 +325,17 @@ func (l *Ledger) Post(ctx context.Context, req PostRequest) (*PostResult, error)
 
 	responseBytes, err := json.Marshal(result)
 	if err != nil {
-		return nil, fmt.Errorf("ledger.Post: marshal result failed: %w", err)
+		return nil, fmt.Errorf("ledger.PostTx: marshal result failed: %w", err)
 	}
 
-	// 7. Update Idempotency Keys with cached response
+	// 6. Update Idempotency Keys with cached response
 	_, err = tx.Exec(ctx, `
 		UPDATE idempotency_keys
 		SET status = 'done', response = $1
 		WHERE key = $2
 	`, responseBytes, req.IdempotencyKey)
 	if err != nil {
-		return nil, fmt.Errorf("ledger.Post: update idempotency key failed: %w", err)
-	}
-
-	// 8. Commit Transaction Atomically
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("ledger.Post: commit failed: %w", err)
+		return nil, fmt.Errorf("ledger.PostTx: update idempotency key failed: %w", err)
 	}
 
 	return result, nil
@@ -358,11 +380,22 @@ func (l *Ledger) RegisterAccount(ctx context.Context, name string, accType Accou
 		normalBalance = "debit"
 	}
 
-	_, err := l.pool.Exec(ctx, `
+	var accID int64
+	err := l.pool.QueryRow(ctx, `
 		INSERT INTO accounts (name, type, currency, constrained, normal_balance)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (name) DO NOTHING
-	`, name, string(accType), currency, constrained, normalBalance)
+		ON CONFLICT (name) DO UPDATE SET constrained = EXCLUDED.constrained
+		RETURNING id
+	`, name, string(accType), currency, constrained, normalBalance).Scan(&accID)
+	if err != nil {
+		return err
+	}
+
+	_, err = l.pool.Exec(ctx, `
+		INSERT INTO account_balances (account_id, constrained, balance_paise)
+		VALUES ($1, $2, 0)
+		ON CONFLICT (account_id) DO NOTHING
+	`, accID, constrained)
 	return err
 }
 

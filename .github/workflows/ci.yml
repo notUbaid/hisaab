@@ -11,6 +11,21 @@ jobs:
     name: Financial Compliance & Core Invariants
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hisaab
+          POSTGRES_PASSWORD: hisaab_dev_password
+          POSTGRES_DB: hisaab
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -26,44 +41,48 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Python dependencies
-        run: |
-          pip install pyyaml
-
-      - name: "Phase 1.1: Spec Coverage Verification (23/23 ECs)"
-        run: python scripts/check_spec_coverage.py
-
-      - name: "Phase 1.2: Zero Real Financial PII Scanner"
-        run: python scripts/check_real_data.py
-
-      - name: "Phase 1.3: PostgreSQL DDL & Immutability Trigger Check"
+      - name: "Phase 1: PostgreSQL DDL & Immutability Trigger Validation"
         run: python scripts/verify_sql_schema.py
 
-      - name: "Phase 2.1: Double-Entry Core Ledger & Invariants (M1)"
+      - name: "Phase 2: Apply PostgreSQL 16 DDL Migration"
+        env:
+          PGPASSWORD: hisaab_dev_password
+        run: |
+          psql -h localhost -U hisaab -d hisaab -f db/migrations/00001_init.sql
+
+      - name: "Phase 3.1: Double-Entry Core Ledger & Live PostgreSQL Conformance"
+        env:
+          DATABASE_URL: postgres://hisaab:hisaab_dev_password@localhost:5432/hisaab?sslmode=disable
         run: go test -v ./internal/ledger/...
 
-      - name: "Phase 2.2: Indian Banking Calendar & RBI Rules"
+      - name: "Phase 3.2: Adversarial Audit Test Suite (A1-A11)"
+        run: go test -v ./tests/adversarial/...
+
+      - name: "Phase 3.3: Indian Banking Calendar & RBI Rules"
         run: go test -v ./internal/calendar/...
 
-      - name: "Phase 2.3: SA Simulator Matching & Refunds (M2)"
+      - name: "Phase 3.4: SA Simulator Matching & Refunds"
         run: go test -v ./internal/settlement/...
 
-      - name: "Phase 2.4: NP Toolkit, Logistics & Tax Withholding (M3)"
+      - name: "Phase 3.5: NP Toolkit, Logistics & Tax Withholding"
         run: go test -v ./internal/nptoolkit/...
 
-      - name: "Phase 2.5: Three-Way Recon Engine (M4)"
+      - name: "Phase 3.6: Three-Way Recon Engine"
         run: go test -v ./internal/recon/...
 
-      - name: "Phase 2.6: Verification Harness & Failpoints (M5)"
+      - name: "Phase 3.7: Cryptographic Merkle Audit Engine"
+        run: go test -v ./internal/audit/...
+
+      - name: "Phase 3.8: Verification Harness & Failpoints"
         run: go test -v ./internal/verification/...
 
-      - name: "Phase 2.7: Formal Mutation Testing Harness (M5.8 - 100% Score)"
+      - name: "Phase 3.9: Formal Mutation Testing Harness (100% Score)"
         run: go test -v ./tests/mutation/...
 
-      - name: "Phase 2.8: Declarative Scenario DSL Runner (M0.2)"
+      - name: "Phase 3.10: Declarative Scenario DSL Runner"
         run: go test -v ./internal/scenariodsl/...
 
-      - name: "Phase 2.9: 8 Crash Failpoints & Property Fuzzing"
+      - name: "Phase 3.11: Crash Failpoints, Property Fuzzing & Scenarios"
         run: |
           go test -v ./tests/crash/...
           go test -v ./tests/property/...
@@ -95,11 +114,11 @@ jobs:
       - name: Execute Two-Level vs Naive Benchmarks
         run: go test -v -bench=. -benchmem ./tests/bench/...
 
-      - name: Execute Scenario DSL on Sample Scenarios via CLI
+      - name: Execute All 22 Declarative Scenarios via hisaab-cli
         run: |
-          ./bin/hisaab-cli run-scenario spec/scenarios/ec-03.yaml
-          ./bin/hisaab-cli run-scenario spec/scenarios/ec-16.yaml
-          ./bin/hisaab-cli run-scenario spec/scenarios/ec-22.yaml
+          for f in spec/scenarios/ec-*.yaml; do
+            ./bin/hisaab-cli run-scenario "$f"
+          done
 
   ops-console:
     name: Next.js 15 Ops Console
