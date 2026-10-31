@@ -33,6 +33,18 @@ module.exports = {
           600: "#059669",
           900: "#064e3b",
         },
+        bone: {
+          DEFAULT: "#FAF9F6",
+          50: "#FAF9F6",
+          100: "#F5F4F0",
+          200: "#EBE9E2",
+        },
+        maroon: {
+          DEFAULT: "#7A1C24",
+          900: "#4A0E13",
+          800: "#7A1C24",
+          700: "#A82833",
+        },
       },
       fontFamily: {
         sans: [

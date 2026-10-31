@@ -17,11 +17,16 @@ import {
   ChevronDown,
   Gauge,
   ShieldCheck,
+  Server,
+  Sliders,
+  X,
 } from "lucide-react";
 import { ParticipantPerspective, PERSPECTIVES } from "@/lib/rbac";
 import { CommandPalette } from "@/components/CommandPalette";
 import { apiClient, RateLimitInfo } from "@/lib/apiClient";
 import { WireBatchModal } from "@/components/WireBatchModal";
+import { WorkerMonitor } from "@/components/WorkerMonitor";
+import { SpecInspector } from "@/components/SpecInspector";
 
 interface NavItem {
   name: string;
@@ -49,6 +54,8 @@ export function AppShell({ children }: AppShellProps) {
   // Cmd+K Palette State
   const [isCmdKOpen, setIsCmdKOpen] = useState(false);
   const [isWireModalOpen, setIsWireModalOpen] = useState(false);
+  const [isWorkerMonitorOpen, setIsWorkerMonitorOpen] = useState(false);
+  const [isSpecInspectorOpen, setIsSpecInspectorOpen] = useState(false);
 
   // ADR-003 Rate Limit Telemetry
   const [rateLimit, setRateLimit] = useState<RateLimitInfo | null>({
@@ -222,6 +229,39 @@ export function AppShell({ children }: AppShellProps) {
               );
             })}
           </nav>
+
+          {/* Quick Telemetry & Spec Controls */}
+          <div className="px-3 pt-3 pb-1 border-t border-white/5 mt-2">
+            <div className="text-[10px] font-mono uppercase text-slate-500 mb-1.5 px-1 flex items-center justify-between">
+              <span>Telemetry & Specs</span>
+            </div>
+            <div className="space-y-1">
+              <button
+                onClick={() => setIsWorkerMonitorOpen(true)}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-white hover:bg-white/5 border border-transparent transition"
+              >
+                <div className="flex items-center gap-2">
+                  <Server className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Worker Queue</span>
+                </div>
+                <span className="text-[9px] px-1 py-0.2 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                  OUTBOX
+                </span>
+              </button>
+              <button
+                onClick={() => setIsSpecInspectorOpen(true)}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-mono text-slate-400 hover:text-white hover:bg-white/5 border border-transparent transition"
+              >
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Spec Matrix</span>
+                </div>
+                <span className="text-[9px] px-1 py-0.2 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                  PINS
+                </span>
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Footer: Live Role Switcher, Rate Limit Telemetry & Health Indicator */}
@@ -339,6 +379,8 @@ export function AppShell({ children }: AppShellProps) {
         onClose={() => setIsCmdKOpen(false)}
         onSelectPerspective={(p) => setPerspective(p)}
         onOpenWireModal={() => setIsWireModalOpen(true)}
+        onOpenWorkerMonitor={() => setIsWorkerMonitorOpen(true)}
+        onOpenSpecInspector={() => setIsSpecInspectorOpen(true)}
       />
 
       {/* ── ISO 20022 Wire Batch Inspector Modal ── */}
@@ -346,6 +388,52 @@ export function AppShell({ children }: AppShellProps) {
         isOpen={isWireModalOpen}
         onClose={() => setIsWireModalOpen(false)}
       />
+
+      {/* ── Background Worker Outbox Telemetry Modal ── */}
+      {isWorkerMonitorOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-obsidian-950/80 backdrop-blur-md animate-in fade-in">
+          <div className="relative w-full max-w-3xl bg-obsidian-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-white/5">
+              <div className="flex items-center gap-2">
+                <Server className="w-4 h-4 text-cyan-400" />
+                <h3 className="font-semibold text-sm text-white uppercase tracking-wider">
+                  Go Background Settlement Worker Telemetry
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsWorkerMonitorOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <WorkerMonitor />
+          </div>
+        </div>
+      )}
+
+      {/* ── Spec & Ambiguities Matrix Modal ── */}
+      {isSpecInspectorOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-obsidian-950/80 backdrop-blur-md animate-in fade-in">
+          <div className="relative w-full max-w-4xl max-h-[85vh] bg-obsidian-900 border border-white/10 rounded-2xl shadow-2xl overflow-y-auto p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-white/5 sticky top-0 bg-obsidian-900 z-10">
+              <div className="flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-purple-400" />
+                <h3 className="font-semibold text-sm text-white uppercase tracking-wider">
+                  ONDC RSF 2.0 Spec Pins & Ambiguities Matrix
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsSpecInspectorOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <SpecInspector />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

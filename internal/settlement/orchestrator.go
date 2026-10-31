@@ -99,6 +99,7 @@ type Orchestrator struct {
 	taxCalc    any
 	failpoints FailpointTrigger
 	pool       *pgxpool.Pool
+	repo       Repository
 
 	// Persistent/In-memory indices
 	claimsByID   map[string]*StoredClaimRecord             // key: message_id
@@ -129,6 +130,7 @@ func NewOrchestrator(
 		calendar:     cal,
 		taxCalc:      taxCalc,
 		failpoints:   fp,
+		repo:         NewMemoryRepository(),
 		claimsByID:   make(map[string]*StoredClaimRecord),
 		claimsByPair: make(map[string]map[string]*SettleClaimPayload),
 		batches:      make(map[string]*BatchSummary),
@@ -142,11 +144,23 @@ func NewOrchestrator(
 func (o *Orchestrator) SetPool(pool *pgxpool.Pool) {
 	o.mu.Lock()
 	o.pool = pool
+	if pool != nil {
+		o.repo = NewPostgresRepository(pool)
+	} else {
+		o.repo = NewMemoryRepository()
+	}
 	o.mu.Unlock()
 
 	if pool != nil {
 		_ = o.RestoreFromPostgres(context.Background())
 	}
+}
+
+// Repository returns the active settlement repository.
+func (o *Orchestrator) Repository() Repository {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.repo
 }
 
 // SetTaxCalculator configures the statutory tax calculation engine.

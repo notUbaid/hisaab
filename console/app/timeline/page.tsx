@@ -24,6 +24,7 @@ import { MerkleBadge } from "@/components/MerkleBadge";
 import { SCENARIOS_DATA } from "@/lib/scenarioData";
 import { WireBatchModal } from "@/components/WireBatchModal";
 import { SignatureInspector } from "@/components/SignatureInspector";
+import { SpecInspector } from "@/components/SpecInspector";
 import { apiClient } from "@/lib/apiClient";
 
 export default function TimelinePage() {
@@ -31,6 +32,7 @@ export default function TimelinePage() {
   const [isCopied, setIsCopied] = useState<boolean>(false);
   const [isWireModalOpen, setIsWireModalOpen] = useState<boolean>(false);
   const [showSignatureInspector, setShowSignatureInspector] = useState<boolean>(false);
+  const [showSpecDrawer, setShowSpecDrawer] = useState<boolean>(false);
   const [isVerifyingProof, setIsVerifyingProof] = useState<boolean>(false);
   const [proofVerification, setProofVerification] = useState<{
     verified: boolean;
@@ -40,6 +42,8 @@ export default function TimelinePage() {
     latencyMs: number;
     rootHash: string;
     claimedRoot?: string;
+    dbPersistentRoot?: string | null;
+    dbRootMatches?: boolean | null;
     error?: string;
   } | null>(null);
 
@@ -56,6 +60,8 @@ export default function TimelinePage() {
         latencyMs: number;
         rootHash: string;
         claimedRoot: string;
+        dbPersistentRoot?: string | null;
+        dbRootMatches?: boolean | null;
       }>("/api/audit/verify", {
         scenarioId: scenario.id,
         claimedRoot: scenario.merkleAudit.rootHash,
@@ -71,6 +77,8 @@ export default function TimelinePage() {
         latencyMs: 0,
         rootHash: scenario.merkleAudit.rootHash,
         claimedRoot: scenario.merkleAudit.rootHash,
+        dbPersistentRoot: null,
+        dbRootMatches: null,
         error: `Verification Engine Offline: ${err.message || "Failed to contact verifier"}`,
       });
     } finally {
@@ -240,27 +248,50 @@ export default function TimelinePage() {
 
       {proofVerification && (
         <div
-          className={`p-3.5 rounded-xl border text-xs font-mono flex items-center justify-between animate-in fade-in ${
+          className={`p-3.5 rounded-xl border text-xs font-mono space-y-2 animate-in fade-in ${
             proofVerification.verified
               ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
               : "bg-rose-500/10 border-rose-500/30 text-rose-300"
           }`}
         >
-          <div className="flex items-center gap-2">
-            {proofVerification.verified ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            ) : (
-              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-            )}
-            <span>
-              {proofVerification.verified
-                ? `Cryptographic Proof Verified: ${proofVerification.invariantsPassed}/${proofVerification.totalInvariants || 5} Invariants Intact (${proofVerification.latencyMs}ms)`
-                : `Verification Failed: ${proofVerification.error || "Invariants or Merkle root mismatch"}`}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {proofVerification.verified ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+              )}
+              <span>
+                {proofVerification.verified
+                  ? `Cryptographic Proof Verified: ${proofVerification.invariantsPassed}/${proofVerification.totalInvariants || 5} Invariants Intact (${proofVerification.latencyMs}ms)`
+                  : `Verification Failed: ${proofVerification.error || "Invariants or Merkle root mismatch"}`}
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-400">
+              {proofVerification.verified ? "RFC 6962 Inclusion Chain Valid" : "Audit Invariant Violation"}
             </span>
           </div>
-          <span className="text-[10px] text-slate-400">
-            {proofVerification.verified ? "RFC 6962 Inclusion Chain Valid" : "Audit Invariant Violation"}
-          </span>
+
+          {proofVerification.dbPersistentRoot && (
+            <div className="pt-2 border-t border-white/5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300">
+              <div className="flex items-center gap-2">
+                <Database className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="text-slate-400">PostgreSQL Root:</span>
+                <span className="text-cyan-300 font-mono text-[10px] truncate max-w-sm">
+                  {proofVerification.dbPersistentRoot}
+                </span>
+              </div>
+              <span
+                className={`px-1.5 py-0.5 rounded text-[9px] border font-mono ${
+                  proofVerification.dbRootMatches
+                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                    : "bg-rose-500/10 text-rose-400 border-rose-500/30"
+                }`}
+              >
+                {proofVerification.dbRootMatches ? "PG PERSISTENCE VERIFIED" : "PG ROOT MISMATCH"}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -359,6 +390,30 @@ export default function TimelinePage() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Spec & Policy Inspector Drawer */}
+      <div className="pt-2">
+        <button
+          onClick={() => setShowSpecDrawer((prev) => !prev)}
+          className="btn-ghost w-full py-2.5 px-4 rounded-xl border border-white/10 flex items-center justify-between text-xs font-mono text-slate-300 hover:text-white hover:bg-white/5 transition"
+        >
+          <div className="flex items-center gap-2">
+            <Layers className="w-4 h-4 text-cyan-400" />
+            <span className="font-semibold uppercase tracking-wider">
+              {showSpecDrawer
+                ? "Hide ONDC Spec Ambiguities & Pins Matrix"
+                : "Inspect ONDC RSF 2.0 Spec Ambiguities & Pins Matrix"}
+            </span>
+          </div>
+          <span className="text-[10px] text-cyan-400">spec/ambiguities.yaml & spec/ondc-pins.yaml</span>
+        </button>
+
+        {showSpecDrawer && (
+          <div className="mt-4 animate-in fade-in">
+            <SpecInspector />
+          </div>
+        )}
       </div>
 
       {/* ISO 20022 Wire Batch Modal */}

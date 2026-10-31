@@ -14,6 +14,8 @@
     --color-reconciled: #10B981;
     --color-pending: #F59E0B;
     --color-mismatch: #F43F5E;
+    --color-bone: #FAF9F6;
+    --color-maroon: #7A1C24;
   }
 
   html, body {
@@ -146,5 +148,33 @@
     color: #94A3B8;
     background-color: rgba(148, 163, 184, 0.1);
     border: 1px solid rgba(148, 163, 184, 0.2);
+  }
+
+  .pill-maroon {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: #fca5a5;
+    background-color: rgba(122, 28, 36, 0.25);
+    border: 1px solid rgba(122, 28, 36, 0.5);
+  }
+
+  .pill-bone {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: #FAF9F6;
+    background-color: rgba(250, 249, 246, 0.1);
+    border: 1px solid rgba(250, 249, 246, 0.25);
   }
 }

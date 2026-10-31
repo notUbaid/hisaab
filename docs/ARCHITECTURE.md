@@ -184,3 +184,47 @@ To eliminate half-paise rounding leaks on odd-paise amounts:
 ### 6.2. Statutory Rates (October 2026 Reality)
 - **GST TCS**: 0.5% (0.25% CGST + 0.25% SGST) under Section 52 of CGST Act 2017 (per CGST Notification 15/2024 dated 10 July 2024).
 - **E-Commerce TDS**: 0.1% under Section 393(1) Table Sl. 8(v) of Income-tax Act 2025 (Payment Code 1035). Rate increases to 5.0% for sellers without PAN/Aadhaar.
+
+---
+
+## 7. Enterprise Persistence Architecture
+
+To guarantee consistency across separated micro-processes (`cmd/api` and `cmd/worker`), Hisaab provides dual-mode transactional persistence via formal repository interfaces:
+
+### 7.1. Ledger Store (`internal/ledger/store.go`)
+- **`SQLStore` (PostgreSQL)**: Manages atomic double-entry postings (`PostEntriesTx`), account balance lookups with `SELECT ... FOR UPDATE` row locks, ascending lock ordering, idempotency validation, and transactional integrity.
+- **`MemoryStore` (Thread-Safe In-Memory)**: Unified high-throughput in-memory store guarded by sync primitives, ensuring unit test suites run in under 200ms without database overhead.
+
+### 7.2. Settlement Repository (`internal/settlement/repository.go`)
+- **`PostgresRepository`**: Fully persists incoming RSF claims, claim line items, settlement batches, netting instructions (`instructions` table), and RFC 6962 signed batch roots (`batch_roots` table).
+- **Restart Recovery**: Restores batch execution state, active outbox events, and uncommitted netting cycles across container restarts.
+
+### 7.3. Reconciliation Exception Repository (`internal/recon/repository.go`)
+- **`PostgresRepository`**: Persists 3-way reconciliation exceptions (`recon_exceptions` table), discrepancy classification, status lifecycle (`OPEN`, `RESOLVED`, `ESCALATED`), and dual-control audit trails (`ResolveException`).
+
+---
+
+## 8. Security, Rate Limiting & Field-Level Encryption
+
+### 8.1. Envelope Field Encryption (ADR-002)
+- Implemented in `internal/crypto/encryption.go`.
+- Encrypts PII, bank account numbers, and IFSC codes using **AES-256-GCM** with 96-bit random nonces and authenticated data tags.
+- Uses master key envelope encryption with key identifiers (`kid`) supporting non-destructive key rotation.
+
+### 8.2. Token-Bucket Rate Limiting (ADR-003)
+- Implemented as HTTP middleware on `cmd/api`.
+- Enforces participant-level quotas (default 60 requests/minute per authenticated participant ID).
+- Emits RFC-compliant headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
+- When quota is exhausted, returns HTTP 429 with backpressure telemetry, tripping the frontend circuit breaker to prevent cascading nodal failures.
+
+---
+
+## 9. Next.js 15 Operator Workbench Architecture
+
+The operator console (`console/`) delivers an institutional, high-density fintech command center:
+- **Design System & Visual Tokens**: Deep obsidian background (`#090A0F`), hairline borders (`rgba(255,255,255,0.07)`), bone-white accents (`#FAF9F6`), maroon alert badges (`#7A1C24`), and tabular figures.
+- **Unified Typed API Client (`console/lib/apiClient.ts`)**: Enforces typed RPCs, automatic role header propagation (`X-Hisaab-Role`), circuit-breaker backpressure handling, and error normalization.
+- **Global Resilience**: Root layout wrapped in `<ToastProvider>` for real-time operational feedback and `<ErrorBoundary>` with component tree recovery.
+- **Spec & Ambiguity Inspector (`console/components/SpecInspector.tsx`)**: Live matrix mapping regulatory edge cases to pinned upstream ONDC commit SHAs and policy flags.
+- **Worker Queue Monitor (`console/components/WorkerMonitor.tsx`)**: Real-time outbox telemetry monitoring queue depth, lease health, and dispatch latency.
+

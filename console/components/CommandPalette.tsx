@@ -18,6 +18,8 @@ import {
   Hash,
   ExternalLink,
   Layers,
+  Activity,
+  Sliders,
 } from "lucide-react";
 import { SCENARIOS_DATA } from "@/lib/scenarioData";
 import { ParticipantPerspective } from "@/lib/rbac";
@@ -28,6 +30,8 @@ export interface CommandPaletteProps {
   onSelectPerspective?: (perspective: ParticipantPerspective) => void;
   onOpenWireModal?: () => void;
   onRunConformanceSuite?: () => void;
+  onOpenWorkerMonitor?: () => void;
+  onOpenSpecInspector?: () => void;
 }
 
 interface PaletteItem {
@@ -46,6 +50,8 @@ export function CommandPalette({
   onSelectPerspective,
   onOpenWireModal,
   onRunConformanceSuite,
+  onOpenWorkerMonitor,
+  onOpenSpecInspector,
 }: CommandPaletteProps) {
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -138,6 +144,30 @@ export function CommandPalette({
           } else {
             router.push("/scenarios?runSuite=true");
           }
+          onClose();
+        },
+      },
+      {
+        id: "action-worker-monitor",
+        category: "Actions",
+        title: "Launch Worker Queue & Outbox Monitor",
+        subtitle: "Real-time Go background settlement outbox telemetry",
+        icon: Activity,
+        badge: "Telemetry",
+        action: () => {
+          if (onOpenWorkerMonitor) onOpenWorkerMonitor();
+          onClose();
+        },
+      },
+      {
+        id: "action-spec-inspector",
+        category: "Actions",
+        title: "Launch Spec & Policy Ambiguity Matrix",
+        subtitle: "Review ONDC RSF 2.0 commit SHA pins and policy toggles",
+        icon: Sliders,
+        badge: "Spec",
+        action: () => {
+          if (onOpenSpecInspector) onOpenSpecInspector();
           onClose();
         },
       },
@@ -260,7 +290,15 @@ export function CommandPalette({
     });
 
     return list;
-  }, [router, onClose, onSelectPerspective, onOpenWireModal, onRunConformanceSuite]);
+  }, [
+    router,
+    onClose,
+    onSelectPerspective,
+    onOpenWireModal,
+    onRunConformanceSuite,
+    onOpenWorkerMonitor,
+    onOpenSpecInspector,
+  ]);
 
   // Filter items by query
   const filteredItems = useMemo(() => {

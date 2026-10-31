@@ -162,7 +162,7 @@ func (r *PostgresRepository) GetException(ctx context.Context, id string) (*Reco
 // ResolveException marks an exception resolved with an associated remedy action.
 func (r *PostgresRepository) ResolveException(ctx context.Context, id string, remedy string) error {
 	if r.pool == nil {
-		return nil
+		return ErrExceptionNotFound
 	}
 
 	cmd, err := r.pool.Exec(ctx, `

@@ -68,7 +68,7 @@ class ApiClient {
     this.listeners.forEach((l) => l(current));
   }
 
-  private updateRateLimits(headers: Headers) {
+  public updateRateLimits(headers: Headers) {
     const limitHeader = headers.get("X-RateLimit-Limit");
     const remainingHeader = headers.get("X-RateLimit-Remaining");
     const resetHeader = headers.get("X-RateLimit-Reset");
@@ -171,6 +171,95 @@ class ApiClient {
 
   public async delete<T = any>(endpoint: string, headers?: Record<string, string>): Promise<T> {
     return this.request<T>(endpoint, { method: "DELETE", headers });
+  }
+
+  // --- Domain Methods ---
+
+  // Scenarios
+  public async getScenarios(): Promise<{ source: string; count: number; scenarios: any[] }> {
+    return this.get("/api/scenarios");
+  }
+
+  public async runScenario(
+    scenarioId: string,
+    targetMode: "simulator" | "live_api" = "simulator",
+    failpoint: string = "FP_NONE"
+  ): Promise<any> {
+    return this.post("/api/scenarios/run", { scenarioId, targetMode, failpoint });
+  }
+
+  // Reconciliation & Exceptions
+  public async getExceptions(): Promise<{ source: string; count: number; exceptions: any[] }> {
+    return this.get("/api/recon");
+  }
+
+  public async approveReconException(params: {
+    exceptionId: string;
+    orderId?: string;
+    npPair?: string;
+    discrepancyPaise?: number;
+    reason?: string;
+  }): Promise<any> {
+    return this.post("/api/recon", {
+      action: "approve_tolerance",
+      ...params,
+    });
+  }
+
+  public async triggerRefund(params: {
+    orderId: string;
+    refundAmountPaise: number;
+    npPair?: string;
+    reason?: string;
+  }): Promise<any> {
+    return this.post("/api/recon", {
+      action: "trigger_refund",
+      ...params,
+    });
+  }
+
+  // ONDC Registry
+  public async getRegistryLookup(subscriberId: string, uniqueKeyId?: string): Promise<any> {
+    const params = new URLSearchParams({ subscriber_id: subscriberId });
+    if (uniqueKeyId) params.append("unique_key_id", uniqueKeyId);
+    return this.get(`/api/registry?${params.toString()}`);
+  }
+
+  // Worker Telemetry
+  public async getWorkerTelemetry(): Promise<any> {
+    return this.get("/api/worker/telemetry");
+  }
+
+  // Settlements Window & Banking Calendar
+  public async getSettlementWindow(payload: {
+    submissionTime?: string;
+    tPlusDays?: number;
+    amountPaise?: number;
+    beneficiaryIfsc?: string;
+    beneficiaryAccount?: string;
+  }): Promise<any> {
+    return this.post("/api/settlements/window", payload);
+  }
+
+  // NP Toolkit & Tax Validator
+  public async validateToolkit(payload: {
+    orderAmountPaise?: number;
+    commissionPaise?: number;
+    bffPaise?: number;
+    hasPan?: boolean;
+    rawPayloadJson?: any;
+  }): Promise<any> {
+    return this.post("/api/toolkit", payload);
+  }
+
+  // Cryptographic Merkle Audit Verification
+  public async verifyProof(payload: {
+    scenarioId?: string;
+    leafIndex?: number;
+    tamperedLeafData?: string;
+    journalEntries?: string[];
+  }): Promise<any> {
+    return this.post("/api/audit/verify", payload);
   }
 }
 

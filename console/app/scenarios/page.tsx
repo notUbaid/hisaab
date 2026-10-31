@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   FlaskConical,
   Play,
@@ -22,16 +22,20 @@ import { LedgerFlowCard } from "@/components/LedgerFlowCard";
 import { ScenarioStepper } from "@/components/ScenarioStepper";
 import { MerkleBadge } from "@/components/MerkleBadge";
 import { SCENARIOS_DATA, ScenarioItem } from "@/lib/scenarioData";
+import { apiClient } from "@/lib/apiClient";
+import { useToast } from "@/components/ToastProvider";
 
 type CategoryTab = "ALL" | "TAX" | "REFUND" | "COLLECTOR" | "CRASH";
 
 export default function ScenariosStudioPage() {
+  const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<CategoryTab>("ALL");
   const [selectedScenarioId, setSelectedScenarioId] = useState<string>("EC-03");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
   const [executionMessage, setExecutionMessage] = useState<string | null>(null);
   const [isExecutionError, setIsExecutionError] = useState<boolean>(false);
+  const [dataSource, setDataSource] = useState<string>("catalog_fallback");
 
   // Full Conformance Suite State
   const [isSuiteRunning, setIsSuiteRunning] = useState<boolean>(false);
@@ -39,6 +43,25 @@ export default function ScenariosStudioPage() {
     Record<string, { passed: boolean; latencyMs: number }>
   >({});
   const [showYamlSplit, setShowYamlSplit] = useState<boolean>(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    apiClient
+      .getScenarios()
+      .then((res) => {
+        if (isMounted && res && res.source) {
+          setDataSource(res.source);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setDataSource("catalog_fallback");
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Active scenario
   const activeScenario = useMemo(() => {
@@ -78,29 +101,34 @@ export default function ScenariosStudioPage() {
     setIsExecutionError(false);
     setExecutionMessage("Executing against Go settlement engine...");
     try {
-      const res = await fetch("/api/scenarios/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scenarioId: activeScenario.id, targetMode: "live_api" }),
-      });
-      const data = await res.json();
+      const data = await apiClient.runScenario(activeScenario.id, "live_api");
       setIsExecuting(false);
-      if (res.ok && data.passed) {
+      if (data.passed) {
         setIsExecutionError(false);
         setExecutionMessage(`Verified: ${data.serverStatus} (${data.latencyMs ?? 12}ms)`);
+        showToast(
+          `Scenario ${activeScenario.id} verified: all financial invariants preserved`,
+          "success",
+          "Conformance Pass"
+        );
         setSuiteResults((prev) => ({
           ...prev,
           [activeScenario.id]: { passed: true, latencyMs: data.latencyMs ?? 12 },
         }));
       } else {
         setIsExecutionError(true);
-        setExecutionMessage(`Verification Failed: ${data.error || data.serverStatus || "Conformance check failed"}`);
+        setExecutionMessage(
+          `Verification Failed: ${data.error || data.serverStatus || "Conformance check failed"}`
+        );
+        showToast(`Scenario ${activeScenario.id} failed verification`, "error", "Conformance Failure");
       }
       setTimeout(() => setExecutionMessage(null), 5000);
-    } catch {
+    } catch (err: any) {
       setIsExecuting(false);
       setIsExecutionError(true);
-      setExecutionMessage("Engine Unavailable: Offline verification failed");
+      const msg = err.message || "Engine Unavailable: Offline verification failed";
+      setExecutionMessage(msg);
+      showToast(msg, "error", "Execution Error");
       setTimeout(() => setExecutionMessage(null), 5000);
     }
   };
@@ -117,15 +145,10 @@ export default function ScenariosStudioPage() {
         SCENARIOS_DATA.map(async (s) => {
           try {
             const start = performance.now();
-            const res = await fetch("/api/scenarios/run", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ scenarioId: s.id, targetMode: "live_api" }),
-            });
-            const data = await res.json();
+            const data = await apiClient.runScenario(s.id, "live_api");
             const elapsed = Math.round(performance.now() - start);
             results[s.id] = {
-              passed: res.ok && data.passed,
+              passed: !!data.passed,
               latencyMs: data.latencyMs ?? Math.max(8, elapsed),
             };
           } catch {
@@ -141,11 +164,17 @@ export default function ScenariosStudioPage() {
       setExecutionMessage(
         `Conformance Suite: ${passedCount}/22 Scenarios Passed (100% Invariants Conserved)`
       );
+      showToast(
+        `Conformance Suite: ${passedCount}/22 Passed`,
+        passedCount === SCENARIOS_DATA.length ? "success" : "warning",
+        "Full Suite Run"
+      );
       setTimeout(() => setExecutionMessage(null), 7000);
-    } catch {
+    } catch (err: any) {
       setIsSuiteRunning(false);
       setIsExecutionError(true);
       setExecutionMessage("Conformance Suite Failed: Verification engine unavailable");
+      showToast("Suite execution encountered an unhandled error", "error");
       setTimeout(() => setExecutionMessage(null), 5000);
     }
   };
@@ -201,10 +230,21 @@ invariants_evaluated:
           {/* Header */}
           <div className="p-3 border-b border-white/5 space-y-2">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-white uppercase tracking-wider flex items-center gap-1.5">
-                <FlaskConical className="w-4 h-4 text-emerald-400" />
-                Scenarios (22)
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  <FlaskConical className="w-4 h-4 text-emerald-400" />
+                  Scenarios (22)
+                </span>
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-mono border ${
+                    dataSource === "live_go_engine"
+                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                      : "bg-obsidian-700 text-slate-400 border-white/5"
+                  }`}
+                >
+                  {dataSource === "live_go_engine" ? "LIVE ENGINE" : "CATALOG"}
+                </span>
+              </div>
               <span className="font-mono text-[10px] text-slate-500">EC-01..22</span>
             </div>
 
