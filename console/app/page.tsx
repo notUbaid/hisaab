@@ -18,6 +18,7 @@ import {
 import MoneyCell, { formatIndianNumbering } from "@/components/MoneyCell";
 import { SCENARIOS_DATA } from "@/lib/scenarioData";
 import { WireBatchModal } from "@/components/WireBatchModal";
+import { WorkerMonitor } from "@/components/WorkerMonitor";
 
 export default function ExecutiveOverviewPage() {
   const [timeLeft, setTimeLeft] = useState<{ hours: number; minutes: number; seconds: number }>({
@@ -272,6 +273,9 @@ export default function ExecutiveOverviewPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Worker Telemetry & Outbox Rail ── */}
+      <WorkerMonitor />
 
       {/* ── 2. Interactive Settlement Pipeline Flow Diagram ── */}
       <div className="fin-card p-5 space-y-4">

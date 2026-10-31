@@ -230,7 +230,26 @@ CREATE TABLE audit_log (
 
 CREATE INDEX idx_audit_log_entity ON audit_log (entity_type, entity_id);
 
--- 14. Immutability Triggers (Prevent UPDATE / DELETE on core ledger tables)
+-- 14. Reconciliation Exceptions (3-Way Engine Discrepancies)
+CREATE TABLE recon_exceptions (
+    exception_id     TEXT PRIMARY KEY,
+    network_order_id TEXT NOT NULL,
+    exception_class  TEXT NOT NULL,
+    expected_paise   BIGINT NOT NULL DEFAULT 0,
+    actual_paise     BIGINT NOT NULL DEFAULT 0,
+    variance_paise   BIGINT NOT NULL DEFAULT 0,
+    ageing_days      INT NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'OPEN',
+    remedy_action    TEXT NOT NULL DEFAULT '',
+    details          TEXT NOT NULL DEFAULT '',
+    detected_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at      TIMESTAMPTZ
+);
+
+CREATE INDEX idx_recon_exceptions_status ON recon_exceptions (status);
+CREATE INDEX idx_recon_exceptions_order ON recon_exceptions (network_order_id);
+
+-- 15. Immutability Triggers (Prevent UPDATE / DELETE on core ledger tables)
 CREATE OR REPLACE FUNCTION prevent_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'Direct mutation of % is prohibited. Use reversing entries.', TG_TABLE_NAME;

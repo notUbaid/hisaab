@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { TaxWaterfall } from "@/components/TaxWaterfall";
 import { SignatureInspector } from "@/components/SignatureInspector";
+import { SpecInspector } from "@/components/SpecInspector";
 import { apiClient } from "@/lib/apiClient";
 
 export default function PlaygroundPage() {
@@ -471,6 +472,9 @@ export default function PlaygroundPage() {
           isVerified={!signatureTampered}
         />
       </div>
+
+      {/* ── 6. ONDC Specification & Policy Matrix Inspector ── */}
+      <SpecInspector />
     </div>
   );
 }

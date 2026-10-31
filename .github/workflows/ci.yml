@@ -89,6 +89,15 @@ jobs:
           go test -v ./tests/property/...
           go test -v ./tests/scenarios/...
 
+      - name: "Phase 3.12: Envelope Field Encryption (ADR-002)"
+        run: go test -v ./internal/crypto/...
+
+      - name: "Phase 3.13: Rate Limiting & RBAC Middleware (ADR-003)"
+        run: go test -v ./internal/auth/...
+
+      - name: "Phase 3.14: API Server Integration & Route Protection"
+        run: go test -v ./cmd/api/...
+
   benchmarks-and-binaries:
     name: Production Binaries & Benchmarks
     runs-on: ubuntu-latest
@@ -144,6 +153,10 @@ jobs:
       - name: TypeScript Type-Check
         working-directory: console
         run: npm run type-check
+
+      - name: Unit & Invariant Component Tests
+        working-directory: console
+        run: npm run test
 
       - name: Production Build
         working-directory: console

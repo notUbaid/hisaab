@@ -41,6 +41,9 @@ func main() {
 
 	var pool *pgxpool.Pool
 	dbURL := os.Getenv("HISAAB_DB_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("DATABASE_URL")
+	}
 	if dbURL != "" {
 		p, err := pgxpool.New(ctx, dbURL)
 		if err != nil {

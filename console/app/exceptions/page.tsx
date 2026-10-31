@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   AlertTriangle,
   Filter,
@@ -11,11 +11,15 @@ import {
   Download,
   RotateCcw,
   Search,
+  RefreshCw,
+  Lock,
 } from "lucide-react";
 import MoneyCell from "@/components/MoneyCell";
 import { ReconDiffDrawer } from "@/components/ReconDiffDrawer";
+import { EncryptedField } from "@/components/EncryptedField";
 import { ReconException, SCENARIOS_DATA } from "@/lib/scenarioData";
 import { ParticipantPerspective } from "@/lib/rbac";
+import { apiClient } from "@/lib/apiClient";
 
 export default function ExceptionsPage() {
   const [selectedException, setSelectedException] = useState<ReconException | null>(null);
@@ -24,8 +28,10 @@ export default function ExceptionsPage() {
   const [filterStatus, setFilterStatus] = useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [perspective, setPerspective] = useState<ParticipantPerspective>("COLLECTOR_RSP");
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [sourceBanner, setSourceBanner] = useState<string | null>(null);
 
-  // Aggregate exceptions across all scenarios
+  // Aggregate exceptions across all scenarios as baseline
   const [exceptions, setExceptions] = useState<ReconException[]>(() => {
     const list: ReconException[] = [];
     SCENARIOS_DATA.forEach((s) => {
@@ -35,6 +41,43 @@ export default function ExceptionsPage() {
     });
     return list;
   });
+
+  // Fetch live exceptions from Go backend API via /api/recon
+  const fetchExceptions = async () => {
+    setIsLoading(true);
+    try {
+      const res = await apiClient.get<{
+        source?: string;
+        count: number;
+        exceptions: any[];
+      }>("/api/recon");
+
+      if (res.exceptions && res.exceptions.length > 0) {
+        const mapped: ReconException[] = res.exceptions.map((e, idx) => ({
+          id: e.id || e.exception_id || `EXC-${idx + 1}`,
+          class: e.class || e.exception_class || "AMOUNT_MISMATCH",
+          orderId: e.orderId || e.network_order_id || `ORD-${1000 + idx}`,
+          expectedPaise: e.expectedPaise || e.expected_paise || 100000,
+          actualPaise: e.actualPaise || e.actual_paise || 99000,
+          variancePaise: e.variancePaise || e.variance_paise || -1000,
+          ageingDays: e.ageingDays || e.ageing_days || 1,
+          status: (e.status === "RESOLVED" ? "RESOLVED" : "OPEN") as "OPEN" | "RESOLVED",
+          details: e.details || "Reconciliation discrepancy detected",
+          remedyAction: e.remedyAction || e.remedy_action || "Pending operator triage",
+        }));
+        setExceptions(mapped);
+        setSourceBanner(res.source === "live_go_engine" ? "Live Go Engine API" : "Scenario Catalog");
+      }
+    } catch (_err) {
+      setSourceBanner("Scenario Catalog (Go Engine Offline)");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchExceptions();
+  }, []);
 
   // Filtered exceptions
   const filteredExceptions = useMemo(() => {
@@ -99,14 +142,27 @@ export default function ExceptionsPage() {
           <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2.5">
             Reconciliation Exceptions Triage
             <span className="pill-rose text-[10px]">{openCount} Active</span>
+            {sourceBanner && (
+              <span className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-slate-400 font-mono text-[10px]">
+                {sourceBanner}
+              </span>
+            )}
           </h1>
           <p className="text-xs text-slate-400 font-mono mt-1">
             Automated Discrepancy Diagnostics, 3-Way Payload Diff & Settlement Remediation
           </p>
         </div>
 
-        {/* Quick Summary Counts */}
+        {/* Quick Summary Counts & Refresh */}
         <div className="flex items-center gap-2 font-mono text-xs">
+          <button
+            onClick={fetchExceptions}
+            disabled={isLoading}
+            className="p-1.5 rounded-lg bg-obsidian-850 border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+            title="Refresh Exceptions"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin text-emerald-400" : ""}`} />
+          </button>
           <div className="px-3 py-1.5 rounded-lg bg-obsidian-850 border border-white/10 text-slate-300">
             Total: <strong className="text-white">{exceptions.length}</strong>
           </div>
@@ -186,6 +242,7 @@ export default function ExceptionsPage() {
             <tr>
               <th className="fin-table-th">Exc ID</th>
               <th className="fin-table-th">Order Ref</th>
+              <th className="fin-table-th">Beneficiary Account</th>
               <th className="fin-table-th">Root Cause Pill</th>
               <th className="fin-table-th text-right">Expected (₹)</th>
               <th className="fin-table-th text-right">Actual (₹)</th>
@@ -211,6 +268,14 @@ export default function ExceptionsPage() {
                 >
                   <td className="fin-table-td font-semibold text-white">{exc.id}</td>
                   <td className="fin-table-td text-slate-400 font-mono text-xs">{exc.orderId}</td>
+                  <td className="fin-table-td">
+                    <EncryptedField
+                      value="918237461928"
+                      label="Beneficiary Account"
+                      fieldType="account_number"
+                      className="text-[11px]"
+                    />
+                  </td>
                   <td className="fin-table-td">
                     <span className={pill.clsName}>{pill.label}</span>
                   </td>

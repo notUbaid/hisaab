@@ -160,11 +160,24 @@ header "Spec citation check"
 SCENARIO_FILES=$(git diff --cached --name-only | grep '^tests/scenarios/' || true)
 for f in $SCENARIO_FILES; do
   if ! grep -q "BRD §\|BRD Section\|Spec version:" "$f" 2>/dev/null; then
-    fail "$f: missing BRD citation comment. See CLAUDE.md §4.3"
+    fail "$f: missing BRD citation comment. See docs/ARCHITECTURE.md"
   fi
 done
 if [ -z "$SCENARIO_FILES" ]; then
   ok "No scenario files staged"
+fi
+
+# ─── 11. Console TypeScript check ─────────────────────────────────────────────
+header "Console TypeScript check"
+CONSOLE_FILES=$(git diff --cached --name-only | grep '^console/' || true)
+if [ -n "$CONSOLE_FILES" ]; then
+  if (cd console && npm run type-check >/dev/null 2>&1); then
+    ok "console type-check passed"
+  else
+    fail "console tsc --noEmit failed"
+  fi
+else
+  ok "No console files staged"
 fi
 
 # ─── Result ───────────────────────────────────────────────────────────────────

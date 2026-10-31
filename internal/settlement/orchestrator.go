@@ -527,9 +527,9 @@ func (o *Orchestrator) executeBatchInternal(
 		if tree, mErr := audit.BuildMerkleTree(canonicalBytesRun); mErr == nil && tree != nil {
 			merkleRoot = tree.RootHex
 			_, _ = tx.Exec(ctx, `
-				INSERT INTO batch_roots (batch_id, root_hash, leaf_count, algorithm, np_pair_id)
-				VALUES ($1, $2, $3, 'sha256', $4)
-				ON CONFLICT (batch_id) DO UPDATE SET root_hash = EXCLUDED.root_hash, leaf_count = EXCLUDED.leaf_count
+				INSERT INTO batch_roots (batch_id, merkle_root, leaf_count, algorithm, np_pair_id)
+				VALUES ($1, $2, $3, 'SHA-256', $4)
+				ON CONFLICT (batch_id) DO UPDATE SET merkle_root = EXCLUDED.merkle_root, leaf_count = EXCLUDED.leaf_count
 			`, batchID, merkleRoot, len(canonicalBytesRun), buyerClaim.NPPairID)
 		}
 
