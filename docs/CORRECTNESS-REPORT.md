@@ -2,7 +2,7 @@
 
 > **Automated Execution Report**
 > Pinned Spec: ONDC RSF 2.0 (2 Aug 2024 / NTS10 2.0.0)
-> Generated: Sat, 31 Oct 2026 14:57:21 IST (Asia/Kolkata)
+> Generated: Sat, 31 Oct 2026 15:10:04 IST (Asia/Kolkata)
 
 ---
 

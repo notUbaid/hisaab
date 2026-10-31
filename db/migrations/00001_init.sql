@@ -183,14 +183,17 @@ CREATE INDEX idx_instructions_batch ON instructions (batch_id);
 
 -- 10. Batch Merkle Roots (Tamper Evidence per batch)
 CREATE TABLE batch_roots (
-    id             BIGSERIAL PRIMARY KEY,
-    batch_id       TEXT NOT NULL UNIQUE,
-    root_hash      TEXT NOT NULL,
-    leaf_count     INT NOT NULL DEFAULT 0,
-    algorithm      TEXT NOT NULL DEFAULT 'sha256',
-    prev_root_hash TEXT,
-    np_pair_id     TEXT NOT NULL DEFAULT '',
-    computed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    root_id           BIGSERIAL PRIMARY KEY,
+    batch_id          TEXT NOT NULL UNIQUE,
+    merkle_root       TEXT NOT NULL,
+    leaf_count        INT NOT NULL DEFAULT 0,
+    algorithm         TEXT NOT NULL DEFAULT 'SHA-256',
+    prev_root_hash    TEXT,
+    np_pair_id        TEXT NOT NULL DEFAULT '',
+    signature_ed25519 TEXT,
+    signing_key_id    TEXT,
+    signed_at         TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_batch_roots_batch ON batch_roots (batch_id);
@@ -317,7 +320,7 @@ DROP TRIGGER IF EXISTS no_update_journal_transactions ON journal_transactions;
 DROP TRIGGER IF EXISTS no_update_journal_entries ON journal_entries;
 DROP FUNCTION IF EXISTS prevent_mutation CASCADE;
 
-DROP TABLE IF EXISTS audit_log, calendar_days, outbox, batch_roots, instructions,
+DROP TABLE IF EXISTS recon_exceptions, audit_log, calendar_days, outbox, batch_roots, instructions,
     match_results, settlement_batches, settlement_batches_default, settlement_batches_2027, settlement_batches_2026,
     batch_runs, claim_lines, claims, idempotency_keys, journal_entries, journal_entries_default, journal_entries_2026_12,
     journal_entries_2026_11, journal_entries_2026_10, journal_transactions, account_balances, accounts CASCADE;

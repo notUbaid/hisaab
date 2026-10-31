@@ -91,6 +91,26 @@ export async function POST(req: NextRequest) {
     let entries: string[] = [];
     let claimedRoot = inputClaimedRoot || inputRootHash || "";
     let activeBatchId = batchId || "BATCH-20261031-01";
+    let dbRootRecord: any = null;
+
+    // 0. Attempt live lookup from Go API persistent audit store if batchId is specified
+    if (activeBatchId) {
+      try {
+        const goApiUrl = process.env.HISAAB_API_URL || "http://127.0.0.1:8080";
+        const res = await fetch(`${goApiUrl}/v1/audit/roots/${activeBatchId}`, {
+          headers: { "X-Hisaab-Role": "Auditor" },
+          signal: AbortSignal.timeout(1200),
+        });
+        if (res.ok) {
+          dbRootRecord = await res.json();
+          if (dbRootRecord && dbRootRecord.merkle_root && !claimedRoot) {
+            claimedRoot = dbRootRecord.merkle_root;
+          }
+        }
+      } catch {
+        // Go API offline; proceed with cryptographic proof reconstruction
+      }
+    }
 
     // 1. Resolve journal entries and claimed root
     if (scenarioId) {
@@ -317,6 +337,8 @@ export async function POST(req: NextRequest) {
       targetLeafHash,
       rootHash: computedRoot,
       claimedRoot: cleanClaimedRoot || computedRoot,
+      dbPersistentRoot: dbRootRecord ? dbRootRecord.merkle_root : null,
+      dbRootMatches: dbRootRecord ? dbRootRecord.merkle_root.toLowerCase() === computedRoot.toLowerCase() : null,
       auditPath,
       signature: signature
         ? {

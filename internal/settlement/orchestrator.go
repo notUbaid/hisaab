@@ -866,7 +866,7 @@ func (o *Orchestrator) RestoreFromPostgres(ctx context.Context) error {
 						roleMap = make(map[string]*SettleClaimPayload)
 						o.claimsByPair[pairKey] = roleMap
 					}
-					roleMap[claim.SubmittedBy] = &claim
+					roleMap[claim.SubmittedBy] = &record.Claim
 				}
 			}
 		}

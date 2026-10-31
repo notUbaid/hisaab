@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   X,
   Download,
@@ -39,6 +39,38 @@ export function WireBatchModal({
 }: WireBatchModalProps) {
   const [activeTab, setActiveTab] = useState<"BREAKDOWN" | "ISO_JSON" | "CALENDAR">("BREAKDOWN");
   const [copied, setCopied] = useState(false);
+  const [calendarInfo, setCalendarInfo] = useState<{
+    scheduledSettlementDate: string;
+    isPastCutoff: boolean;
+    targetSettlementWindow: string;
+    rolloverExplanations: string[];
+    upcomingBankHolidays: { date: string; name: string; citation: string }[];
+  } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let isMounted = true;
+    fetch("/api/settlements/window", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        amountPaise,
+        beneficiaryAccount,
+        beneficiaryIfsc,
+        tPlusDays: 1,
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data) {
+          setCalendarInfo(data);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, amountPaise, beneficiaryAccount, beneficiaryIfsc]);
 
   if (!isOpen) return null;
 
@@ -194,38 +226,69 @@ export function WireBatchModal({
           {activeTab === "CALENDAR" && (
             <div className="space-y-3 font-mono text-xs">
               <div className="p-3 rounded-lg bg-obsidian-900 border border-white/5 space-y-2">
-                <span className="text-[10px] uppercase text-slate-500 font-bold block">
-                  RBI Negotiable Instruments Act Rollover Trace
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase text-slate-500 font-bold block">
+                    RBI Negotiable Instruments Act Rollover Trace
+                  </span>
+                  <span className="pill-amber text-[9px]">{calendarInfo?.targetSettlementWindow || "T+1"} Window</span>
+                </div>
                 <p className="text-slate-300 text-[11px] leading-relaxed">
-                  Why did this transaction settle on <strong className="text-white">{scheduledDate}</strong>?
+                  Target Settlement Date: <strong className="text-white">{calendarInfo?.scheduledSettlementDate || scheduledDate}</strong> (17:00 IST Cutoff)
                 </p>
 
                 <div className="space-y-2 pt-2 border-t border-white/5">
-                  <div className="flex items-start gap-2 text-slate-300 text-[11px]">
-                    <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-white font-semibold">T+0 Submission (17:15:00 IST)</p>
-                      <p className="text-slate-400">Received past the 17:00 IST RTGS cutoff. Rolled to T+1 base.</p>
-                    </div>
-                  </div>
+                  {calendarInfo?.rolloverExplanations && calendarInfo.rolloverExplanations.length > 0 ? (
+                    calendarInfo.rolloverExplanations.map((exp, idx) => (
+                      <div key={idx} className="flex items-start gap-2 text-slate-300 text-[11px]">
+                        <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-white font-semibold">{exp}</p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <>
+                      <div className="flex items-start gap-2 text-slate-300 text-[11px]">
+                        <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-white font-semibold">T+0 Submission (17:15:00 IST)</p>
+                          <p className="text-slate-400">Received past the 17:00 IST RTGS cutoff. Rolled to T+1 base.</p>
+                        </div>
+                      </div>
 
-                  <div className="flex items-start gap-2 text-slate-300 text-[11px]">
-                    <Calendar className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-white font-semibold">Weekend Closure (Saturday / Sunday)</p>
-                      <p className="text-slate-400">Skipped Saturday (Week 4 RBI closure) and Sunday statutory closure.</p>
-                    </div>
-                  </div>
+                      <div className="flex items-start gap-2 text-slate-300 text-[11px]">
+                        <Calendar className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-white font-semibold">Weekend Closure (Saturday / Sunday)</p>
+                          <p className="text-slate-400">Skipped Saturday (Week 4 RBI closure) and Sunday statutory closure.</p>
+                        </div>
+                      </div>
 
-                  <div className="flex items-start gap-2 text-slate-300 text-[11px]">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-emerald-300 font-semibold">Next Operational Business Day</p>
-                      <p className="text-slate-400">Executed on {scheduledDate} with nodal wire dispatch.</p>
-                    </div>
-                  </div>
+                      <div className="flex items-start gap-2 text-slate-300 text-[11px]">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-emerald-300 font-semibold">Next Operational Business Day</p>
+                          <p className="text-slate-400">Executed on {scheduledDate} with nodal wire dispatch.</p>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
+
+                {calendarInfo?.upcomingBankHolidays && calendarInfo.upcomingBankHolidays.length > 0 && (
+                  <div className="pt-3 border-t border-white/5 space-y-1.5">
+                    <span className="text-[10px] uppercase text-slate-500 font-bold block">
+                      Statutory RBI Banking Closures (Negotiable Instruments Act)
+                    </span>
+                    <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                      {calendarInfo.upcomingBankHolidays.slice(0, 4).map((h, i) => (
+                        <div key={i} className="p-1.5 rounded bg-obsidian-950 border border-white/5 text-slate-400">
+                          <span className="text-white font-medium">{h.date}:</span> {h.name}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

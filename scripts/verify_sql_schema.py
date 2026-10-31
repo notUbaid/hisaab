@@ -31,6 +31,7 @@ REQUIRED_TABLES = [
     "outbox",
     "calendar_days",
     "audit_log",
+    "recon_exceptions",
 ]
 
 REQUIRED_TRIGGERS = [
