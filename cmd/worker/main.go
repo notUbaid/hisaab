@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -69,7 +70,7 @@ func main() {
 		cancel()
 	}()
 
-	if err := processor.Run(ctx); err != nil && err != context.Canceled {
+	if err := processor.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("Outbox worker terminated with error", "error", err)
 		os.Exit(1)
 	}

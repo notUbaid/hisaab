@@ -115,6 +115,14 @@ func (m *MemoryLedger) GetAccount(name string) (Account, bool) {
 	return acc, ok
 }
 
+// GetAccountByID retrieves an account by its unique integer identifier.
+func (m *MemoryLedger) GetAccountByID(id int64) (Account, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	acc, ok := m.accountByID[id]
+	return acc, ok
+}
+
 // GetBalance calculates the net balance for a given account in integer paise.
 func (m *MemoryLedger) GetBalance(accountName string) (AmountPaise, error) {
 	return m.Balance(context.Background(), accountName)

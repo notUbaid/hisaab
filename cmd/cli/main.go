@@ -241,10 +241,6 @@ func runTrialBalance(args []string) {
 	// Seed typical operational day
 	_ = fundAndSettleSampleBatch(ctx, mem)
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "Account Name\tAccount Type\tDirection\tNet Balance (Paise)\tNet Balance (INR)")
-	fmt.Fprintln(w, "------------\t------------\t---------\t-------------------\t-----------------")
-
 	standardAccounts := []string{
 		"collector:ondc_settlement",
 		"receiver:ondc_settlement",
@@ -254,29 +250,75 @@ func runTrialBalance(args []string) {
 		"ext:nodal_clearing",
 	}
 
+	type AccTotals struct {
+		debits  int64
+		credits int64
+	}
+	totals := make(map[string]*AccTotals)
+	for _, accName := range standardAccounts {
+		totals[accName] = &AccTotals{}
+	}
+
+	for _, entry := range mem.GetEntries() {
+		acc, ok := mem.GetAccountByID(entry.AccountID)
+		if !ok {
+			continue
+		}
+		t, exists := totals[acc.Name]
+		if !exists {
+			t = &AccTotals{}
+			totals[acc.Name] = t
+		}
+		if entry.Direction == ledger.Debit {
+			t.debits += int64(entry.AmountPaise)
+		} else {
+			t.credits += int64(entry.AmountPaise)
+		}
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "Account Name\tAccount Type\tDebit (Paise)\tCredit (Paise)\tDebit (INR)\tCredit (INR)")
+	fmt.Fprintln(w, "------------\t------------\t-------------\t--------------\t-----------\t------------")
+
 	var totalDebitPaise int64
 	var totalCreditPaise int64
 
 	for _, accName := range standardAccounts {
 		acc, _ := mem.GetAccount(accName)
-		bal, _ := mem.GetBalance(accName)
-		dir := "Credit"
-		if bal < 0 {
-			dir = "Debit"
-			totalDebitPaise += -int64(bal)
-		} else {
-			totalCreditPaise += int64(bal)
+		t := totals[accName]
+		var netDebit, netCredit int64
+
+		if t.debits > t.credits {
+			netDebit = t.debits - t.credits
+			totalDebitPaise += netDebit
+		} else if t.credits > t.debits {
+			netCredit = t.credits - t.debits
+			totalCreditPaise += netCredit
 		}
-		inrVal := fmt.Sprintf("Rs. %.2f", float64(bal)/100.0)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", acc.Name, acc.Type, dir, bal, inrVal)
+
+		debitINR := "-"
+		creditINR := "-"
+		if netDebit > 0 {
+			debitINR = fmt.Sprintf("Rs. %.2f", float64(netDebit)/100.0)
+		}
+		if netCredit > 0 {
+			creditINR = fmt.Sprintf("Rs. %.2f", float64(netCredit)/100.0)
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\n", acc.Name, acc.Type, netDebit, netCredit, debitINR, creditINR)
 	}
 	_ = w.Flush()
 
-	fmt.Printf("\nGlobal Debits Sum:  %d paise\n", totalDebitPaise)
-	fmt.Printf("Global Credits Sum: %d paise\n", totalCreditPaise)
+	fmt.Printf("\nGlobal Debits Sum:  %d paise (Rs. %.2f)\n", totalDebitPaise, float64(totalDebitPaise)/100.0)
+	fmt.Printf("Global Credits Sum: %d paise (Rs. %.2f)\n", totalCreditPaise, float64(totalCreditPaise)/100.0)
+
+	if totalDebitPaise != totalCreditPaise {
+		fmt.Fprintf(os.Stderr, "[FAILED] Trial Balance violation: debits %d != credits %d\n", totalDebitPaise, totalCreditPaise)
+		os.Exit(1)
+	}
 
 	if err := mem.AuditInvariants(); err != nil {
-		fmt.Fprintf(os.Stderr, "[FAILED] Trial Balance violation: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[FAILED] Invariant violation: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("[OK] Invariant 1 Verified: Total Debits == Total Credits (Zero-Sum Conservation).")
