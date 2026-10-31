@@ -364,19 +364,19 @@ func buildServerMux(
 		dbConnected := pool != nil
 
 		if pool != nil {
-			rows, qErr := pool.Query(r.Context(), `SELECT status, COUNT(*) FROM outbox_events GROUP BY status`)
+			rows, qErr := pool.Query(r.Context(), `SELECT status, COUNT(*) FROM outbox GROUP BY status`)
 			if qErr == nil {
 				defer rows.Close()
 				for rows.Next() {
 					var status string
 					var count int
 					if scanErr := rows.Scan(&status, &count); scanErr == nil {
-						switch status {
-						case "PENDING":
+						switch strings.ToLower(status) {
+						case "pending":
 							pendingEvents = count
-						case "DISPATCHED":
+						case "done":
 							dispatchedEvents = count
-						case "FAILED":
+						case "failed":
 							failedEvents = count
 						}
 					}

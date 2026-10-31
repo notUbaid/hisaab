@@ -344,6 +344,15 @@ func (p *OutboxProcessor) handleBankInstruction(ctx context.Context, rawPayload 
 		return fmt.Errorf("bank wire dispatch failed: %w", err)
 	}
 
+	if p.pool != nil {
+		_, _ = p.pool.Exec(ctx, `
+			UPDATE instructions
+			SET status = 'sent',
+			    sent_at = NOW()
+			WHERE batch_id = $1 AND from_account = $2 AND to_account = $3
+		`, instruction.BatchID, instruction.FromAccount, instruction.ToAccount)
+	}
+
 	slog.Info("Dispatched net bank instruction via clearing rail",
 		"from", instruction.FromAccount,
 		"to", instruction.ToAccount,
