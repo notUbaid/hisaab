@@ -290,6 +290,7 @@ func buildServerMux(
 			filepath.Join("..", "spec", "scenarios", "*.yaml"),
 			filepath.Join("..", "..", "spec", "scenarios", "*.yaml"),
 			filepath.Join("/app", "spec", "scenarios", "*.yaml"),
+			filepath.Join("/app", "scenarios", "*.yaml"),
 		}
 		var files []string
 		for _, pat := range patternCandidates {
@@ -337,7 +338,19 @@ func buildServerMux(
 		scenarioPath := fmt.Sprintf("spec/scenarios/%s.yaml", scenarioIDLower)
 		sc, err := scenariodsl.LoadScenarioFile(scenarioPath)
 		if err != nil {
-			sc, err = scenariodsl.LoadScenarioFile(fmt.Sprintf("%s.yaml", scenarioIDLower))
+			candidates := []string{
+				filepath.Join("scenarios", fmt.Sprintf("%s.yaml", scenarioIDLower)),
+				filepath.Join("/app", "spec", "scenarios", fmt.Sprintf("%s.yaml", scenarioIDLower)),
+				filepath.Join("/app", "scenarios", fmt.Sprintf("%s.yaml", scenarioIDLower)),
+				fmt.Sprintf("%s.yaml", scenarioIDLower),
+			}
+			for _, cand := range candidates {
+				if loaded, candErr := scenariodsl.LoadScenarioFile(cand); candErr == nil {
+					sc = loaded
+					err = nil
+					break
+				}
+			}
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Scenario file for %s not found: %v", scenarioID, err), http.StatusNotFound)
 				return

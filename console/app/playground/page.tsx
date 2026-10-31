@@ -22,8 +22,10 @@ import { TaxWaterfall } from "@/components/TaxWaterfall";
 import { SignatureInspector } from "@/components/SignatureInspector";
 import { SpecInspector } from "@/components/SpecInspector";
 import { apiClient } from "@/lib/apiClient";
+import { useToast } from "@/components/ToastProvider";
 
 export default function PlaygroundPage() {
+  const { showToast } = useToast();
   // Schema Validator State
   const [jsonInput, setJsonInput] = useState<string>(() => {
     return JSON.stringify(
@@ -92,26 +94,27 @@ export default function PlaygroundPage() {
     setIsValidating(true);
     try {
       const parsed = JSON.parse(jsonInput);
-      const res = await apiClient.post<{
-        valid: boolean;
-        errors: { line: number; message: string; field: string }[];
-        specsEvaluated: string[];
-      }>("/api/toolkit", {
-        action: "validate_schema",
-        payload: parsed,
+      const res = await apiClient.validateToolkit({
+        rawPayloadJson: parsed,
       });
 
       setValidationResult({
         valid: res.valid,
-        errors: res.errors,
-        specsChecked: res.specsEvaluated,
+        errors: res.errors || [],
+        specsChecked: res.specsEvaluated || ["RSF-2.0 (ONDC:RET10)"],
       });
+      if (res.valid) {
+        showToast("RSF 2.0 payload schema validated successfully", "success", "Schema Valid");
+      } else {
+        showToast("Payload schema has validation errors", "warning", "Schema Invalid");
+      }
     } catch (e: any) {
       setValidationResult({
         valid: false,
         errors: [{ line: 1, message: `Syntax Error: ${e.message}`, field: "JSON Syntax" }],
         specsChecked: ["JSON RFC 8259"],
       });
+      showToast("Malformed JSON syntax", "error", "Validation Error");
     } finally {
       setIsValidating(false);
     }
@@ -127,34 +130,27 @@ export default function PlaygroundPage() {
     const activeFailpointKey = Object.entries(failpoints).find(([_, active]) => active)?.[0] || "FP_NONE";
 
     try {
-      const res = await fetch("/api/scenarios/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scenarioId: "ec-14",
-          targetMode: "live_api",
-          failpoint: activeFailpointKey,
-        }),
-      });
-      const data = await res.json();
+      const data = await apiClient.runScenario("ec-14", "live_api", activeFailpointKey);
       setIsSimulatingChaos(false);
-      if (res.ok && data.passed) {
+      if (data.passed) {
         setIsChaosError(false);
         setChaosTestResult(
           `Chaos Handled Safely: Ledger Rolled Back Atomically. Invariant 4 Protected (Zero-Sum Intact).`
         );
+        showToast(`Failpoint ${activeFailpointKey} safely intercepted and rolled back`, "success", "Chaos Resilience");
       } else {
         setIsChaosError(true);
         setChaosTestResult(
           `Verification Failed: ${data.error || "Simulation rejected unhandled state"}`
         );
+        showToast(`Chaos simulation rejected invalid state`, "warning", "Failpoint Triggered");
       }
-    } catch {
+    } catch (err: any) {
       setIsSimulatingChaos(false);
       setIsChaosError(true);
-      setChaosTestResult(
-        "Verification Engine Unavailable: Could not execute failpoint check (Offline)."
-      );
+      const msg = err.message || "Verification Engine Unavailable: Could not execute failpoint check (Offline).";
+      setChaosTestResult(msg);
+      showToast(msg, "error", "Execution Error");
     }
   };
 

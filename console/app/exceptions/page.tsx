@@ -46,11 +46,7 @@ export default function ExceptionsPage() {
   const fetchExceptions = async () => {
     setIsLoading(true);
     try {
-      const res = await apiClient.get<{
-        source?: string;
-        count: number;
-        exceptions: any[];
-      }>("/api/recon");
+      const res = await apiClient.getExceptions();
 
       if (res.exceptions && res.exceptions.length > 0) {
         const mapped: ReconException[] = res.exceptions.map((e, idx) => ({
